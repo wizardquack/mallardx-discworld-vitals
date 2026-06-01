@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Discworld Vitals</title>
+  <link rel="stylesheet" href="vitals.css">
+  <script src="vitals.js" defer></script>
+</head>
+<body>
+  <div class="vitals">
+    <div class="xp-card">
+      <span class="xp-label">XP</span>
+      <span class="xp-value" id="xp-value">—</span>
+      <span class="xp-rate"  id="xp-rate">— / hr</span>
+    </div>
+
+    <div class="shields" id="shields">
+      <div class="chip unknown" data-key="eff" title="Endorphin's Floating Friend">EFF</div>
+      <div class="chip unknown" data-key="ccc" title="Chrenedict's Corporeal Covering">CCC</div>
+      <div class="chip unknown" data-key="bug" title="Bugshield">BUG</div>
+      <div class="chip unknown" data-key="ms"  title="Major Shield">MS</div>
+      <div class="chip unknown" data-key="tpa" title="Transcendent Pneumatic Alleviator">TPA</div>
+    </div>
+
+    <div class="bars-block">
+      <div class="stat-row">
+        <span class="label">HP</span>
+        <span class="bar hp" id="hp-bar"><span class="fill" id="hp-fill"></span></span>
+        <span class="value" id="hp-value">—</span>
+      </div>
+      <div class="stat-row">
+        <span class="label">GP</span>
+        <span class="bar gp" id="gp-bar"><span class="fill" id="gp-fill"></span></span>
+        <span class="value" id="gp-value">—</span>
+      </div>
+      <div class="burden-row" id="burden-row">
+        <span class="label">Bdn</span>
+        <span class="bar"><span class="fill" id="burden-fill"></span></span>
+        <span class="value" id="burden-value">—</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
