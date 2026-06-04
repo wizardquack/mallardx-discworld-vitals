@@ -1,6 +1,6 @@
 id = "net.mallard.discworld-vitals"
 name = "Discworld Vitals"
-version = "0.4.1"
+version = "0.4.2"
 language = "lua"
 entry = "src/main.lua"
 mallard_api_version = "1.0"
