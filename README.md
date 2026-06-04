@@ -4,14 +4,6 @@ A Mallard flagship plugin for Discworld MUD. Custom-HTML panel
 (`ui/vitals.{html,css,js}`) showing an XP card, an arcane-shield chip
 row (EFF / CCC / BUG / MS / TPA), and HP / GP / Burden bars.
 
-## Install (dev)
-
-```sh
-bash scripts/reinstall.sh
-```
-
-Then restart Mallard or toggle the plugin in the manager.
-
 ## What it does
 
 The plugin maintains a single state snapshot on the Lua side and pushes
@@ -63,6 +55,3 @@ fires today on "You do not have any arcane or divine protection."
 and `…eff.up/.down`. The unified surface was introduced alongside the
 discworld-grouping shield-row work.)
 
-## Design
-
-Full design lives in the [Mallard repo](https://github.com/wizardquack/mallard) under `docs/superpowers/specs/2026-05-18-discworld-flagships-vitals-chat-design.md`.
