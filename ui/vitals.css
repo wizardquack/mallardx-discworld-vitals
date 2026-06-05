@@ -1,30 +1,33 @@
+/* Plugin design tokens, derived from Mallard host theme tokens (pushed into
+ * the iframe's :root inline style via `set-theme`). Each `var(--host, hex)`
+ * chain resolves to the host's themed value when present and falls back to
+ * the original dark-theme hex otherwise — covering first paint (before the
+ * host's push arrives) and standalone-browser preview. `--bg`/`--fg`/`--border`
+ * are themed by the host overriding these stylesheet defaults via inline
+ * style, so they stay as raw hex here. */
 :root {
   --bg:            #1a1a1a;
   --fg:            #ddd;
-  --muted:         #777;
-  --dim:           #555;
+  --muted:         var(--fg-muted, #777);
   --border:        #333;
-  --card-bg:       #202020;
-  --card-border:   #2c2c2c;
-  --bar-track:     #2a2a2a;
+  --bar-track:     var(--border, #2a2a2a);
 
-  --hp-good:       #4ade80;
-  --hp-mid:        #facc15;
-  --hp-low:        #fb923c;
-  --hp-crit:       #ef4444;
-  --gp-fill:       #60a5fa;
-  --burden-fill:   #ef4444;
-  --xp-rate:       #4ade80;
+  --hp-good:       var(--ansi-10,  #4ade80);
+  --hp-mid:        var(--ansi-11,  #facc15);
+  --hp-low:        var(--ansi-9,   #fb923c);
+  --hp-crit:       var(--error-fg, #ef4444);
+  --gp-fill:       var(--link,     #60a5fa);
+  --burden-fill:   var(--error-fg, #ef4444);
 
-  --chip-up-bg:         #2d3a2d;
-  --chip-up-border:     #3f5a3f;
-  --chip-up-fg:         #e8e8e8;
-  --chip-down-bg:       #2a1818;
-  --chip-down-border:   #7f1d1d;
-  --chip-down-fg:       #fca5a5;
+  --chip-up-bg:         color-mix(in srgb, var(--ansi-10,  #4ade80) 18%, transparent);
+  --chip-up-border:     color-mix(in srgb, var(--ansi-10,  #4ade80) 45%, transparent);
+  --chip-up-fg:         var(--fg, #e8e8e8);
+  --chip-down-bg:       color-mix(in srgb, var(--error-fg, #ef4444) 18%, transparent);
+  --chip-down-border:   color-mix(in srgb, var(--error-fg, #ef4444) 45%, transparent);
+  --chip-down-fg:       var(--error-fg, #fca5a5);
   --chip-unknown-bg:    transparent;
-  --chip-unknown-border:#333;
-  --chip-unknown-fg:    #555;
+  --chip-unknown-border: var(--border, #333);
+  --chip-unknown-fg:    var(--fg-muted, #555);
 }
 
 html, body {
@@ -47,8 +50,8 @@ html, body {
 
 /* ----- XP card ----- */
 .xp-card {
-  background: var(--card-bg);
-  border: 1px solid var(--card-border);
+  background: var(--bg-elevated, #202020);
+  border: 1px solid var(--border, #2c2c2c);
   border-radius: 4px;
   padding: 7px 10px 8px;
   display: grid;
@@ -64,7 +67,7 @@ html, body {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--muted);
+  color: var(--fg-muted, #777);
 }
 .xp-card .xp-value {
   grid-row: 1;
@@ -82,9 +85,9 @@ html, body {
   text-align: right;
   font-variant-numeric: tabular-nums;
   font-size: 10px;
-  color: var(--xp-rate);
+  color: var(--ansi-10, #4ade80);
 }
-.xp-card .xp-rate.unknown { color: var(--dim); }
+.xp-card .xp-rate.unknown { color: var(--fg-muted, #555); }
 
 /* ----- Shield chips ----- */
 .shields {
