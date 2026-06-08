@@ -187,7 +187,7 @@ end)
 -- XP/hour ticker — recompute every 5s, push if changed.
 -- ---------------------------------------------------------------------
 
-mud.timer.every(5000, function()
+mud.every(5000, function()
   local r = tracker.rate(now_seconds())
   local formatted = (r ~= nil) and format_thousands(r) or nil
   if formatted ~= state.xp_rate then
@@ -201,7 +201,7 @@ end)
 -- overwrite the optimistic value when they arrive.
 -- ---------------------------------------------------------------------
 
-mud.timer.every(2000, function()
+mud.every(2000, function()
   if gp.tick() then push_gp_optimistic() end
 end)
 
@@ -341,7 +341,7 @@ end)
 -- Keep the "age" segment fresh while the shield is up. 1s tick is
 -- plenty for second-resolution duration; idle when state != "up" so
 -- we don't churn the panel unnecessarily.
-mud.timer.every(1000, function()
+mud.every(1000, function()
   if state.shields.tpa.state == "up" then
     shield_set("tpa", "up", tpa_format_up())
   end
