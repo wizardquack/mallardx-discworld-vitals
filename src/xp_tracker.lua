@@ -41,7 +41,20 @@ function M.make(window_seconds, min_seconds)
     return math.floor(delta / span * 3600 + 0.5)
   end
 
-  return { record = record, rate = rate, _samples = samples }
+  -- Replace the rolling-window samples in-place. Used to hydrate from
+  -- persisted storage on relog. Preserves the `samples` table identity so
+  -- existing `_samples` references stay valid (matters for tests).
+  local function replace_samples(new_samples)
+    for i = #samples, 1, -1 do samples[i] = nil end
+    if type(new_samples) ~= "table" then return end
+    for i, s in ipairs(new_samples) do
+      if type(s) == "table" and type(s.ts) == "number" and type(s.xp) == "number" then
+        samples[#samples + 1] = { ts = s.ts, xp = s.xp }
+      end
+    end
+  end
+
+  return { record = record, rate = rate, replace_samples = replace_samples, _samples = samples }
 end
 
 return M

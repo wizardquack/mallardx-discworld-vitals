@@ -15,6 +15,10 @@ const SHIELD_TITLE = {
 
 const xpValueEl = document.getElementById("xp-value");
 const xpRateEl  = document.getElementById("xp-rate");
+const chartEl     = document.getElementById("xp-chart");
+const chartLineEl = document.getElementById("xp-chart-line");
+const chartGridEl = document.getElementById("xp-chart-grid");
+const chartMaxEl  = document.getElementById("xp-chart-max");
 const hpBarEl   = document.getElementById("hp-bar");
 const hpFillEl  = document.getElementById("hp-fill");
 const hpValueEl = document.getElementById("hp-value");
@@ -77,6 +81,73 @@ function renderXp(xp, xpRate) {
   }
 }
 
+// SVG viewBox dimensions for the chart. CSS stretches it to the container,
+// so these are just the coordinate system for plotting, not pixels.
+const CHART_W = 100, CHART_H = 40;
+const CHART_GRID_LINES = 4;
+// The x-axis represents a fixed 60-minute window anchored to "now" on the
+// right edge — must match XP_CHART_MAX_POINTS on the Lua side. With fewer
+// samples the line grows leftward from x=CHART_W instead of stretching to
+// fill the chart, so each new minute advances the line by ~1/60 of width
+// from minute one (rather than starting fast and slowing as the buffer fills).
+const CHART_WINDOW_POINTS = 60;
+
+// Round `value` up to a "nice" ceiling at the leading-digit granularity:
+// 12,345 → 20,000; 8,500 → 9,000; 99,000 → 100,000. Matches the intent
+// of quow's 100k-step scaling but adapts to the actual data range so a
+// 2,000 xp/hr trickle doesn't get squashed against the baseline.
+function chartNiceCeil(value) {
+  if (!(value > 0)) return 1000;
+  const exp = Math.floor(Math.log10(value));
+  const step = Math.pow(10, exp);
+  return Math.ceil(value / step) * step;
+}
+
+function chartFormatRate(n) {
+  if (n < 1000) return String(Math.round(n));
+  if (n < 1_000_000) return Math.round(n / 1000) + "k";
+  return (n / 1_000_000).toFixed(1) + "m";
+}
+
+function renderChart(chart) {
+  const enabled = chart && chart.enabled !== false;
+  chartEl.hidden = !enabled;
+  if (!enabled) return;
+
+  let gridStr = "";
+  for (let i = 0; i <= CHART_GRID_LINES; i++) {
+    const y = (i / CHART_GRID_LINES) * CHART_H;
+    gridStr += `<line x1="0" y1="${y}" x2="${CHART_W}" y2="${y}"/>`;
+  }
+  chartGridEl.innerHTML = gridStr;
+
+  const series = (chart && Array.isArray(chart.series)) ? chart.series : [];
+  if (series.length === 0) {
+    chartLineEl.setAttribute("points", "");
+    chartMaxEl.textContent = "—";
+    return;
+  }
+
+  let max = 0;
+  for (const v of series) if (v > max) max = v;
+  const ceil = chartNiceCeil(max);
+  chartMaxEl.textContent = chartFormatRate(ceil) + "/hr";
+
+  const n = series.length;
+  const pts = [];
+  const denom = CHART_WINDOW_POINTS - 1;
+  for (let i = 0; i < n; i++) {
+    // Newest sample sits at x=CHART_W (right edge = "now"); the i-th oldest
+    // is (n-1-i) minutes back, mapped onto the 60-minute axis.
+    const minutesBack = n - 1 - i;
+    const x = CHART_W - (minutesBack / denom) * CHART_W;
+    const v = Math.max(0, Math.min(ceil, series[i]));
+    const y = CHART_H - (v / ceil) * CHART_H;
+    pts.push(x.toFixed(2) + "," + y.toFixed(2));
+  }
+  chartLineEl.setAttribute("points", pts.join(" "));
+}
+
 function renderShield(key, shield) {
   const el = chipEls[key];
   if (!el) return;
@@ -95,6 +166,7 @@ function renderShield(key, shield) {
 function applyState(state) {
   if (!state || typeof state !== "object") return;
   renderXp(state.xp, state.xp_rate);
+  renderChart(state.xp_chart);
   const shields = state.shields || {};
   for (const k of SHIELD_KEYS) renderShield(k, shields[k]);
   renderBar(hpBarEl, hpFillEl, hpValueEl, state.hp, "hp");

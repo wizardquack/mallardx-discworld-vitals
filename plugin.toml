@@ -55,6 +55,12 @@ choices = [
   { value = "1h",  label = "1 hour"     },
 ]
 
+[settings.show_xp_chart]
+type = "bool"
+default = true
+label = "Show XP/hr chart"
+description = "Show a small chart of point-in-time XP/hour values over the last hour, below the XP card."
+
 [settings.show_xp_gains]
 type = "bool"
 default = true

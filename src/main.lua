@@ -22,11 +22,15 @@ local panel = mud.panel("vitals")
 -- ---------------------------------------------------------------------
 
 local state = {
-  hp      = nil,          -- { value, max } | nil
-  gp      = nil,          -- { value, max } | nil
-  burden  = nil,          -- 0..100 | nil
-  xp      = nil,          -- formatted string | nil
-  xp_rate = nil,          -- formatted string | nil
+  hp       = nil,         -- { value, max } | nil
+  gp       = nil,         -- { value, max } | nil
+  burden   = nil,         -- 0..100 | nil
+  xp       = nil,         -- formatted string | nil
+  xp_rate  = nil,         -- formatted string | nil
+  xp_chart = {            -- point-in-time xp/hour samples
+    enabled = settings.get("show_xp_chart") ~= false,
+    series  = {},         -- array of xp/hour numbers, oldest first, max 60
+  },
   shields = {
     eff = { state = "unknown", detail = "" },
     ccc = { state = "unknown", detail = "" },
@@ -123,6 +127,10 @@ local function set_xp(x)
   if x then state.xp = format_thousands(x); push_state() end
 end
 
+-- Forward-declared so the `char.info` handler below can reference it
+-- before the persistence section defines it further down.
+local hydrate_xp_state
+
 -- ---------------------------------------------------------------------
 -- GMCP — `char.vitals` carries authoritative HP/GP/burden/XP on login
 -- and (on some Discworld configs) periodic refreshes. MXP entity pushes
@@ -164,6 +172,11 @@ gmcp.on("char.info", function(_pkg, data)
     end
   end
   events.emit("net.mallard.discworld.char_info", data)
+  -- char.info is the first wire-side hint of who we're logged in as.
+  -- Hydrate is idempotent per (charname) — repeated info updates with the
+  -- same name don't re-hydrate. A name change (alt switch) triggers a
+  -- fresh hydrate and from then on saves the new alt's slot.
+  if type(data.name) == "string" then hydrate_xp_state(data.name) end
 end)
 
 -- ---------------------------------------------------------------------
@@ -215,6 +228,78 @@ mud.every(5000, function()
     state.xp_rate = formatted
     push_state()
   end
+end)
+
+-- ---------------------------------------------------------------------
+-- XP/hour chart series — one sample per minute, capped at 60 points
+-- (~last hour). Each sample is the current windowed xp/hour or 0 if the
+-- tracker doesn't have enough data yet, so the polyline starts at the
+-- baseline rather than jumping in mid-chart. See quow's UpdateXPGraph
+-- (QuowMinimap.xml:17105) for the reference implementation.
+-- ---------------------------------------------------------------------
+
+local XP_CHART_MAX_POINTS = 60
+
+-- ---------------------------------------------------------------------
+-- XP state persistence — keyed by `char.info.name` so the chart and the
+-- "last shown" xp/hour figure survive plugin restart / relog. Strategy
+-- is restore-verbatim with rolling-window self-heal:
+--   * tracker samples replay through `trim(now)` and any older than the
+--     window get dropped; rate() goes nil until 30s of fresh activity,
+--     during which the sticky `state.xp_rate` from the last session
+--     stays visible.
+--   * chart series points slide off the right edge as fresh samples
+--     arrive — after at most 60 minutes the chart is 100% live data.
+-- We gate saves on a successful hydration (or a confirmed nothing-to-
+-- hydrate) so the first post-login save can't blank out the persisted
+-- record before char.info has arrived to tell us who we are.
+-- ---------------------------------------------------------------------
+
+local hydrated_for = nil
+
+hydrate_xp_state = function(charname)
+  if not charname or charname == "" then return end
+  if hydrated_for == charname then return end
+  hydrated_for = charname
+  local saved = storage.get("xp_state/" .. charname)
+  if type(saved) ~= "table" then return end
+
+  -- Restore chart series in-place — preserves the table identity referenced
+  -- from state.xp_chart.series, so we don't have to reassign + push twice.
+  local series = state.xp_chart.series
+  for i = #series, 1, -1 do series[i] = nil end
+  if type(saved.chart_series) == "table" then
+    for i, v in ipairs(saved.chart_series) do
+      if type(v) == "number" then series[i] = v end
+    end
+  end
+
+  tracker.replace_samples(saved.tracker_samples)
+
+  if type(saved.last_rate) == "string" and saved.last_rate ~= "" then
+    state.xp_rate = saved.last_rate
+  end
+
+  push_state()
+end
+
+local function save_xp_state()
+  if not hydrated_for then return end
+  storage.set("xp_state/" .. hydrated_for, {
+    chart_series    = state.xp_chart.series,
+    tracker_samples = tracker._samples,
+    last_rate       = state.xp_rate,
+    saved_at        = now_seconds(),
+  })
+end
+
+mud.every(60000, function()
+  local series = state.xp_chart.series
+  local r = tracker.rate(now_seconds()) or 0
+  series[#series + 1] = r
+  if #series > XP_CHART_MAX_POINTS then table.remove(series, 1) end
+  save_xp_state()
+  push_state()
 end)
 
 -- ---------------------------------------------------------------------
@@ -390,6 +475,10 @@ end)
 mud.trigger(
   [==[^Hp: (?P<hp>\d+) ?\((?P<maxhp>\d+)\) +(?:Gp\: (?P<gp>\d+) ?\((?P<maxgp>\d+)\)) +(?:Xp\: (?P<xp>\d+))(?:  Burden: (?P<burden>\d+)\%)?$]==],
   function(m)
+    -- Defensive: some host paths invoke the callback without a match table
+    -- (observed as spammy `attempt to index a nil value (local 'm')` warnings).
+    -- Bail rather than fault — there's nothing to apply without captures.
+    if not m then return end
     if m.hp and m.maxhp then
       state.hp = { value = m.hp, max = m.maxhp }
     end
