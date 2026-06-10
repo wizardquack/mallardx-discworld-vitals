@@ -8,8 +8,9 @@
 -- src/gp_tracker.lua — both are unit-tested at the Lua level under
 -- src-tauri/tests/discworld_vitals_plugin.rs.
 
-local xp_tracker = require("xp_tracker")
-local gp_tracker = require("gp_tracker")
+local xp_tracker    = require("xp_tracker")
+local gp_tracker    = require("gp_tracker")
+local skills_parser = require("skills_parser")
 
 local panel = mud.panel("vitals")
 
@@ -397,3 +398,105 @@ mud.trigger(
     push_state()
   end
 )
+
+-- ---------------------------------------------------------------------
+-- Skills — parse `skills raw` into a flat path → (level, bonus) snapshot,
+-- store per character, and broadcast `net.mallard.discworld.skills.updated`
+-- so peer plugins (autocols, future build planners, etc.) can read skill
+-- state without re-parsing the wire format. Late-binding consumers can fire
+-- `net.mallard.discworld.skills.request` to get a replay of the cached
+-- snapshot — the same convention discworld-magic uses for shield state.
+--
+-- Entry point: `/skills-refresh` slash alias. We intentionally don't parse
+-- bare `skills raw` typed by the user — gating on the alias keeps the absorb
+-- triggers cold until we know an authoritative output is en route.
+--
+-- Format details and the column-major walk live in src/skills_parser.lua.
+-- ---------------------------------------------------------------------
+
+local SKILLS_ARM_TIMEOUT_SECONDS = 5
+
+local skills_sm = skills_parser.make({
+  -- The full Discworld tree is ~190 leaves. Set the floor well below that
+  -- so we still accept legitimate parses if the tree shrinks slightly, but
+  -- comfortably above any plausible interrupted or garbage capture.
+  min_skills    = 100,
+  on_log        = function(_level, msg) mud.note(msg) end,
+  on_flush      = function(snapshot)
+    -- char.info.name is guaranteed by login ordering — see plugin.toml
+    -- header. If it's somehow missing we'd rather drop than write under a
+    -- placeholder key that could collide across alts.
+    local charname = vars.get("char.info.name")
+    if not charname or charname == "" then
+      mud.note("skills_parser: no char.info.name yet; dropping snapshot.")
+      return
+    end
+    storage.set("skills/" .. charname, snapshot)
+    storage.set("skills/_last_active", charname)
+    events.emit("net.mallard.discworld.skills.updated", {
+      charname = charname,
+      snapshot = snapshot,
+    })
+    mud.note(string.format("skills: cached %d skills for %s",
+      snapshot.skill_count, charname))
+  end,
+})
+
+-- A single 250 ms poll handles both arm-timeout and idle-flush. We
+-- previously used `mud.delay` reschedule-on-each-absorb, but that churned
+-- one scheduled-callback handle per absorbed line and was racy: the engine
+-- could fire a handle on the same tick we removed it, producing
+-- `invoke_callback: unknown callback id N` warnings. A single recurring
+-- poll is both cheaper and immune to that race.
+local last_absorb_at = nil
+local SKILLS_IDLE_FLUSH_SECONDS = 1
+local function mark_absorbed() last_absorb_at = now_seconds() end
+
+mud.every(250, function()
+  local now = now_seconds()
+  skills_sm.try_arm_timeout(now, SKILLS_ARM_TIMEOUT_SECONDS)
+  if last_absorb_at and (now - last_absorb_at) >= SKILLS_IDLE_FLUSH_SECONDS then
+    last_absorb_at = nil
+    skills_sm.try_flush(now)
+  end
+end)
+
+-- Header trigger flips armed → collecting. The pattern is the documented
+-- start-of-output marker that Discworld emits at the top of `skills raw`.
+mud.trigger(skills_parser.HEADER_PATTERN, function()
+  skills_sm.on_header(now_seconds())
+  mark_absorbed()
+end)
+
+-- Absorber: any line containing at least one skill-shaped cell. Coarse on
+-- purpose — the canonical parse happens in build_snapshot at flush time.
+mud.trigger(skills_parser.LINE_HAS_SKILL_CELL_PATTERN, function(m)
+  if skills_sm.on_line(m.text) then
+    mark_absorbed()
+  end
+end)
+
+-- Slash alias — the only sanctioned entry point.
+mud.alias([[^/skills-refresh$]], function()
+  skills_sm.arm(now_seconds())
+  mud.send("skills raw")
+end, { name = "skills_refresh" })
+
+-- Late-binding read surface. A consumer plugin that loaded after the parse
+-- can fire this event with an optional `charname`; we reply by re-emitting
+-- `skills.updated` with the cached snapshot, marked `replay = true` so
+-- consumers can distinguish on-demand replies from live updates.
+events.on("net.mallard.discworld.skills.request", function(d)
+  d = (type(d) == "table") and d or {}
+  local charname = d.charname
+                or vars.get("char.info.name")
+                or storage.get("skills/_last_active")
+  if not charname or charname == "" then return end
+  local snapshot = storage.get("skills/" .. charname)
+  if not snapshot then return end
+  events.emit("net.mallard.discworld.skills.updated", {
+    charname = charname,
+    snapshot = snapshot,
+    replay   = true,
+  })
+end)

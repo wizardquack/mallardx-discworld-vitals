@@ -14,6 +14,8 @@ license = "MIT"
 # `net.mallard.discworld.char_info` so discworld-grouping can read it without
 # needing its own gmcp permission.
 gmcp_access = ["char.vitals", "char.info", "char.info.*"]
+# Required for /skills-refresh, which sends `skills raw` to drive the parser.
+sends = true
 
 [worlds]
 match = ["discworld.starturtle.net:*"]
