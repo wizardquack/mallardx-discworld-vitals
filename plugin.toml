@@ -52,3 +52,17 @@ choices = [
   { value = "30m", label = "30 minutes" },
   { value = "1h",  label = "1 hour"     },
 ]
+
+[settings.show_xp_gains]
+type = "bool"
+default = true
+label = "Announce XP gains"
+description = "Print a note to the game output each time XP increases by at least the threshold below."
+
+[settings.xp_gain_threshold]
+type = "number"
+default = 1000
+min = 1
+max = 1000000
+label = "XP gain threshold"
+description = "Minimum XP delta required to print a gain note."

@@ -83,6 +83,24 @@ local window_seconds = ({ ["5m"] = 300, ["30m"] = 1800, ["1h"] = 3600 })[xp_wind
 local tracker        = xp_tracker.make(window_seconds, 30)
 local gp             = gp_tracker.make(gp_regen)
 
+-- Last raw XP value seen, used to compute the per-update delta for the
+-- optional gain-announcement feature. Nil until the first sample arrives —
+-- we don't announce on the initial reading.
+local last_xp = nil
+
+local function announce_xp_gain(raw_xp)
+  local n = tonumber(raw_xp)
+  if not n then return end
+  if last_xp ~= nil and settings.get("show_xp_gains") then
+    local gain      = n - last_xp
+    local threshold = tonumber(settings.get("xp_gain_threshold")) or 0
+    if gain >= threshold and gain > 0 then
+      mud.note(string.format("{xp: %d}", gain))
+    end
+  end
+  last_xp = n
+end
+
 local function set_hp(v, m)
   if v and m then state.hp = { value = v, max = m }; push_state() end
 end
@@ -122,6 +140,7 @@ gmcp.on("char.vitals", function(_pkg, data)
   if type(data.xp) == "number" then
     state.xp = format_thousands(data.xp)
     tracker.record(now_seconds(), data.xp)
+    announce_xp_gain(data.xp)
   end
   push_state()
 end)
@@ -180,6 +199,7 @@ mxp.on_entity("xp", function(_, v)
   if x then
     set_xp(x)
     tracker.record(now_seconds(), x)
+    announce_xp_gain(x)
   end
 end)
 
@@ -372,6 +392,7 @@ mud.trigger(
       state.burden = m.burden
       state.xp     = format_thousands(m.xp)
       tracker.record(now_seconds(), m.xp)
+      announce_xp_gain(m.xp)
     end
     push_state()
   end
