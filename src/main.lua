@@ -437,7 +437,7 @@ local skills_sm = skills_parser.make({
       charname = charname,
       snapshot = snapshot,
     })
-    mud.note(string.format("skills: cached %d skills for %s",
+    mud.note(string.format("skills-refresh: refreshed %d skills for %s",
       snapshot.skill_count, charname))
   end,
 })
@@ -463,15 +463,24 @@ end)
 
 -- Header trigger flips armed → collecting. The pattern is the documented
 -- start-of-output marker that Discworld emits at the top of `skills raw`.
-mud.trigger(skills_parser.HEADER_PATTERN, function()
+-- We gag the header only when /skills-refresh armed us — a user who types
+-- `skills raw` directly still sees their output scroll normally.
+mud.trigger(skills_parser.HEADER_PATTERN, function(m)
+  if skills_sm.state() == "armed" then m:gag() end
   skills_sm.on_header(now_seconds())
   mark_absorbed()
 end)
 
 -- Absorber: any line containing at least one skill-shaped cell. Coarse on
 -- purpose — the canonical parse happens in build_snapshot at flush time.
+-- `on_line` returns true only when we're actively collecting (= we're the
+-- ones who requested this output), so gating the gag on its return matches
+-- the header-trigger policy: hide ours, leave manual `skills raw` alone.
+-- `mud.trigger` fires once per regex match, so for a packed 27-cell line we
+-- gag 27 times; the effect is idempotent.
 mud.trigger(skills_parser.LINE_HAS_SKILL_CELL_PATTERN, function(m)
   if skills_sm.on_line(m.text) then
+    m:gag()
     mark_absorbed()
   end
 end)
