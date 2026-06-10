@@ -305,6 +305,19 @@ events.on("net.mallard.discworld.shield.down", function(d)
   shield_set(t, "down", "")
 end)
 
+-- GP zeroed by discworld-magic (trance emerge). Discworld doesn't push
+-- a fresh Char.Vitals when contemplation ends, so the magic plugin
+-- emits this event and we force gp.value to 0 in the mirror — mirrors
+-- Quow's HandleContemplateEnd (QuowMinimap.xml:22990). maxgp is left
+-- untouched; if we never saw an authoritative gp/maxgp yet, no-op.
+events.on("net.mallard.discworld.gp.zero", function(d)
+  if type(d) ~= "table" or d.subject ~= "self" then return end
+  local _, m = gp.current()
+  if not m then return end
+  gp.set(0, m)
+  push_gp_optimistic()
+end)
+
 -- `shield.cleared` for self fires when the wire confirms "no arcane
 -- protection" (or on a future-proofing path: the start of a protections
 -- dump for self). Reset every chip to "down" — subsequent shield.up
