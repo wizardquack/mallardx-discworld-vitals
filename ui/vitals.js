@@ -70,10 +70,22 @@ function renderBurden(percent) {
   burdenRowEl.classList.toggle("high", p >= 60);
 }
 
-function renderXp(xp, xpRate) {
+function formatRampingAge(seconds) {
+  if (seconds < 60) return Math.floor(seconds) + "s";
+  return Math.floor(seconds / 60) + "m";
+}
+
+function renderXp(xp, xpRate, rampingSeconds) {
   xpValueEl.textContent = (xp != null && xp !== "") ? xp : "—";
   if (xpRate != null && xpRate !== "") {
-    xpRateEl.textContent = "+" + xpRate + " / hr";
+    // During ramp-up (rampingSeconds is a number < window length), the rate
+    // is the running sum since tracking began, not a per-hour figure — show
+    // the elapsed observation time instead of "/ hr" so the user can read
+    // it correctly.
+    const suffix = (typeof rampingSeconds === "number")
+      ? " (" + formatRampingAge(rampingSeconds) + ")"
+      : " / hr";
+    xpRateEl.textContent = "+" + xpRate + suffix;
     xpRateEl.classList.remove("unknown");
   } else {
     xpRateEl.textContent = "— / hr";
@@ -165,7 +177,7 @@ function renderShield(key, shield) {
 
 function applyState(state) {
   if (!state || typeof state !== "object") return;
-  renderXp(state.xp, state.xp_rate);
+  renderXp(state.xp, state.xp_rate, state.xp_rate_ramping_seconds);
   renderChart(state.xp_chart);
   const shields = state.shields || {};
   for (const k of SHIELD_KEYS) renderShield(k, shields[k]);

@@ -26,7 +26,11 @@ local state = {
   gp       = nil,         -- { value, max } | nil
   burden   = nil,         -- 0..100 | nil
   xp       = nil,         -- formatted string | nil
-  xp_rate  = nil,         -- formatted string | nil
+  xp_rate  = nil,         -- formatted string | nil   (trailing-window xp count)
+  xp_rate_ramping_seconds = nil,  -- number | nil; nil ⇒ window is full and
+                                  -- xp_rate is a true per-hour figure. Otherwise
+                                  -- xp_rate is the running sum since tracking
+                                  -- began (UI labels it "(Nm)" instead of "/ hr").
   xp_chart = {            -- point-in-time xp/hour samples
     enabled = settings.get("show_xp_chart") ~= false,
     series  = {},         -- array of xp/hour numbers, oldest first, max 60
@@ -82,10 +86,8 @@ local function now_seconds() return os.time() end
 -- Trackers
 -- ---------------------------------------------------------------------
 
-local xp_window      = settings.get("xp_window")
 local gp_regen       = settings.get("gp_regen")
-local window_seconds = ({ ["5m"] = 300, ["30m"] = 1800, ["1h"] = 3600 })[xp_window] or 3600
-local tracker        = xp_tracker.make(window_seconds, 30)
+local tracker        = xp_tracker.make(3600)
 local gp             = gp_tracker.make(gp_regen)
 
 -- Last raw XP value seen, used to compute the per-update delta for the
@@ -222,10 +224,11 @@ end)
 -- ---------------------------------------------------------------------
 
 mud.every(5000, function()
-  local r = tracker.rate(now_seconds())
+  local r, ramping = tracker.rate(now_seconds())
   local formatted = (r ~= nil) and format_thousands(r) or nil
-  if formatted ~= state.xp_rate then
+  if formatted ~= state.xp_rate or ramping ~= state.xp_rate_ramping_seconds then
     state.xp_rate = formatted
+    state.xp_rate_ramping_seconds = ramping
     push_state()
   end
 end)
@@ -245,9 +248,9 @@ local XP_CHART_MAX_POINTS = 60
 -- "last shown" xp/hour figure survive plugin restart / relog. Strategy
 -- is restore-verbatim with rolling-window self-heal:
 --   * tracker samples replay through `trim(now)` and any older than the
---     window get dropped; rate() goes nil until 30s of fresh activity,
---     during which the sticky `state.xp_rate` from the last session
---     stays visible.
+--     window get dropped; if everything ages out, rate() goes nil and the
+--     sticky `state.xp_rate` from the last session stays visible until
+--     fresh XP arrives.
 --   * chart series points slide off the right edge as fresh samples
 --     arrive — after at most 60 minutes the chart is 100% live data.
 -- We gate saves on a successful hydration (or a confirmed nothing-to-

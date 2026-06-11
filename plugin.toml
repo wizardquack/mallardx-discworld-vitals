@@ -44,17 +44,6 @@ max = 5
 label = "GP regen per round"
 description = "GP regenerated per ~2s combat round between authoritative updates."
 
-[settings.xp_window]
-type = "enum"
-default = "1h"
-label = "XP/hour averaging window"
-description = "Time window over which XP/hour is averaged."
-choices = [
-  { value = "5m",  label = "5 minutes"  },
-  { value = "30m", label = "30 minutes" },
-  { value = "1h",  label = "1 hour"     },
-]
-
 [settings.show_xp_chart]
 type = "bool"
 default = true
