@@ -4,7 +4,7 @@
 // in place. Mirrors the discworld-grouping / discworld-sailing pattern:
 // single "state" channel, full snapshot, no diffing.
 
-const SHIELD_KEYS = ["eff", "ccc", "bug", "ms", "tpa"];
+const SHIELD_KEYS = ["tpa", "eff", "ccc", "bug", "ms"];
 const SHIELD_TITLE = {
   eff: "Endorphin's Floating Friend",
   ccc: "Chrenedict's Corporeal Covering",
