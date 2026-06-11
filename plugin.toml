@@ -5,7 +5,7 @@ description = "A vitals panel for Discworld - XP, XP rate, shields, HP, GP, burd
 language = "lua"
 entry = "src/main.lua"
 mallard_api_version = "1.0"
-minimum_app_version = "0.6.0"
+minimum_app_version = "0.8.0"
 authors = ["Wizard Quack"]
 license = "MIT"
 
