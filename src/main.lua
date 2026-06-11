@@ -518,6 +518,53 @@ mud.trigger(
 
 local SKILLS_ARM_TIMEOUT_SECONDS = 5
 
+-- Diff two skill snapshots into a sorted list of changes. Each entry is
+-- { path, old_lvl, old_bonus, new_lvl, new_bonus }; nil values mean the
+-- path was added (no old_*) or removed (no new_*).
+local function diff_skills(prev, current)
+  local changes = {}
+  local seen = {}
+  for path, lvl in pairs(current.level) do
+    seen[path] = true
+    local old_lvl = prev.level and prev.level[path]
+    local old_bonus = prev.bonus and prev.bonus[path]
+    if lvl ~= old_lvl or current.bonus[path] ~= old_bonus then
+      changes[#changes + 1] = {
+        path = path,
+        old_lvl = old_lvl, old_bonus = old_bonus,
+        new_lvl = lvl,     new_bonus = current.bonus[path],
+      }
+    end
+  end
+  if prev.level then
+    for path, lvl in pairs(prev.level) do
+      if not seen[path] then
+        changes[#changes + 1] = {
+          path = path,
+          old_lvl = lvl, old_bonus = prev.bonus and prev.bonus[path],
+          new_lvl = nil, new_bonus = nil,
+        }
+      end
+    end
+  end
+  table.sort(changes, function(a, b) return a.path < b.path end)
+  return changes
+end
+
+local function print_skills_diff(charname, changes)
+  local function fmt(lvl, bonus)
+    return string.format("%s/%s",
+      lvl ~= nil and tostring(lvl) or "—",
+      bonus ~= nil and tostring(bonus) or "—")
+  end
+  mud.note(string.format("skills-refresh: %d skill%s changed for %s:",
+    #changes, #changes == 1 and "" or "s", charname))
+  for _, c in ipairs(changes) do
+    mud.note(string.format("  %s: %s → %s",
+      c.path, fmt(c.old_lvl, c.old_bonus), fmt(c.new_lvl, c.new_bonus)))
+  end
+end
+
 local skills_sm = skills_parser.make({
   -- The full Discworld tree is ~190 leaves. Set the floor well below that
   -- so we still accept legitimate parses if the tree shrinks slightly, but
@@ -533,14 +580,34 @@ local skills_sm = skills_parser.make({
       mud.note("skills_parser: no char.info.name yet; dropping snapshot.")
       return
     end
+    local prev = storage.get("skills/" .. charname)
     storage.set("skills/" .. charname, snapshot)
     storage.set("skills/_last_active", charname)
     events.emit("net.mallard.discworld.skills.updated", {
       charname = charname,
       snapshot = snapshot,
     })
-    mud.note(string.format("skills-refresh: refreshed %d skills for %s",
-      snapshot.skill_count, charname))
+    local prefix = string.format("skills-refresh: finished refreshing %d skills for %s",
+      snapshot.skill_count, charname)
+    if not prev then
+      mud.note(prefix .. " (first refresh)")
+      return
+    end
+    local changes = diff_skills(prev, snapshot)
+    if #changes == 0 then
+      mud.note(prefix .. " (no skills changed since last refresh)")
+      return
+    end
+    local count_label = string.format("%d skill%s",
+      #changes, #changes == 1 and "" or "s")
+    mud.note(
+      prefix .. " (",
+      mud.span(count_label, {
+        underline = true,
+        on_click  = function() print_skills_diff(charname, changes) end,
+      }),
+      " changed since last refresh)"
+    )
   end,
 })
 
@@ -590,6 +657,7 @@ end)
 -- Slash alias — the only sanctioned entry point.
 mud.alias([[^/skills-refresh$]], function()
   skills_sm.arm(now_seconds())
+  mud.note("skills-refresh: working...")
   mud.send("skills raw", { silent = true })
 end, { name = "skills_refresh" })
 
