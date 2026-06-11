@@ -306,24 +306,13 @@ local function save_xp_state()
   })
 end
 
--- Newest tracker-sample ts as of the last chart push. Lets us skip pushes
--- when the wire has gone quiet (disconnect, sleep, deep AFK) so the series
--- doesn't slide real data off the left in favour of a flat plateau.
-local last_chart_tracker_ts = nil
-
+-- Push a chart sample every minute regardless of wire activity. rate() is
+-- sticky during quiet stretches (trim is anchored on the newest sample's
+-- ts, not wall-clock), so an idle plateau truthfully extends the last
+-- observed rate. The chart renderer treats each slot as one minute of real
+-- time, so we must keep advancing it or the x-axis stops corresponding to
+-- real time.
 mud.every(60000, function()
-  local samples    = tracker._samples
-  local newest     = samples[#samples]
-  local newest_ts  = newest and newest.ts or nil
-  -- Skip if the tracker hasn't advanced since the last chart sample —
-  -- AND we've already pushed at least one real sample for this session.
-  -- The `nil` case is preserved so the startup baseline-0 sample still
-  -- lands while the tracker is empty.
-  if newest_ts ~= nil and newest_ts == last_chart_tracker_ts then
-    return
-  end
-  last_chart_tracker_ts = newest_ts
-
   local series = state.xp_chart.series
   local r = tracker.rate(now_seconds()) or 0
   series[#series + 1] = r
