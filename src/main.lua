@@ -590,7 +590,7 @@ end)
 -- Slash alias — the only sanctioned entry point.
 mud.alias([[^/skills-refresh$]], function()
   skills_sm.arm(now_seconds())
-  mud.send("skills raw")
+  mud.send("skills raw", { silent = true })
 end, { name = "skills_refresh" })
 
 -- Late-binding read surface. A consumer plugin that loaded after the parse
