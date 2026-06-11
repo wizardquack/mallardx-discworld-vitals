@@ -113,7 +113,7 @@ local function announce_xp_gain(raw_xp)
     local gain      = n - last_xp
     local threshold = to_num(settings.get("xp_gain_threshold")) or 0
     if gain >= threshold and gain > 0 then
-      mud.note(string.format("{xp: %d}", gain))
+      mud.note("{xp: " .. format_thousands(gain) .. "}")
     end
   end
   last_xp = n
