@@ -88,9 +88,10 @@ const CHART_GRID_LINES = 4;
 // The x-axis represents a fixed 60-minute window anchored to "now" on the
 // right edge — must match XP_CHART_MAX_POINTS on the Lua side. With fewer
 // samples the line grows leftward from x=CHART_W instead of stretching to
-// fill the chart, so each new minute advances the line by ~1/60 of width
-// from minute one (rather than starting fast and slowing as the buffer fills).
-const CHART_WINDOW_POINTS = 60;
+// fill the chart, so each new 10s sample advances the line by ~1/360 of
+// width from sample one (rather than starting fast and slowing as the
+// buffer fills).
+const CHART_WINDOW_POINTS = 360;
 
 // Round `value` up to a "nice" ceiling at the leading-digit granularity:
 // 12,345 → 20,000; 8,500 → 9,000; 99,000 → 100,000. Matches the intent
@@ -138,9 +139,9 @@ function renderChart(chart) {
   const denom = CHART_WINDOW_POINTS - 1;
   for (let i = 0; i < n; i++) {
     // Newest sample sits at x=CHART_W (right edge = "now"); the i-th oldest
-    // is (n-1-i) minutes back, mapped onto the 60-minute axis.
-    const minutesBack = n - 1 - i;
-    const x = CHART_W - (minutesBack / denom) * CHART_W;
+    // is (n-1-i) steps back, mapped onto the fixed-width axis.
+    const stepsBack = n - 1 - i;
+    const x = CHART_W - (stepsBack / denom) * CHART_W;
     const v = Math.max(0, Math.min(ceil, series[i]));
     const y = CHART_H - (v / ceil) * CHART_H;
     pts.push(x.toFixed(2) + "," + y.toFixed(2));

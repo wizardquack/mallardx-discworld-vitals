@@ -244,14 +244,14 @@ mud.every(5000, function()
 end)
 
 -- ---------------------------------------------------------------------
--- XP/hour chart series — one sample per minute, capped at 60 points
+-- XP/hour chart series — one sample every 10s, capped at 360 points
 -- (~last hour). Each sample is the current windowed xp/hour or 0 if the
 -- tracker doesn't have enough data yet, so the polyline starts at the
 -- baseline rather than jumping in mid-chart. See quow's UpdateXPGraph
 -- (QuowMinimap.xml:17105) for the reference implementation.
 -- ---------------------------------------------------------------------
 
-local XP_CHART_MAX_POINTS = 60
+local XP_CHART_MAX_POINTS = 360
 
 -- ---------------------------------------------------------------------
 -- XP state persistence — keyed by `char.info.name` so the chart and the
@@ -306,13 +306,13 @@ local function save_xp_state()
   })
 end
 
--- Push a chart sample every minute regardless of wire activity. rate() is
--- sticky during quiet stretches (trim is anchored on the newest sample's
+-- Push a chart sample every 10 seconds regardless of wire activity. rate()
+-- is sticky during quiet stretches (trim is anchored on the newest sample's
 -- ts, not wall-clock), so an idle plateau truthfully extends the last
--- observed rate. The chart renderer treats each slot as one minute of real
--- time, so we must keep advancing it or the x-axis stops corresponding to
--- real time.
-mud.every(60000, function()
+-- observed rate. The chart renderer treats each slot as a fixed time step,
+-- so we must keep advancing it or the x-axis stops corresponding to real
+-- time.
+mud.every(10000, function()
   local series = state.xp_chart.series
   local r = tracker.rate(now_seconds()) or 0
   series[#series + 1] = r
