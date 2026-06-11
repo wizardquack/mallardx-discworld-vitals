@@ -27,7 +27,7 @@ M.HEADER_PATTERN = [[^=+SKILLS=+Level/Unmodified bonus=+$]]
 -- "the line contains the cell pattern at all". A cell is recognisable by
 -- `<letter-or-hyphen>+ <dots>+ <ws> <num-or-dash> <ws> <num-or-dash>`.
 M.LINE_HAS_SKILL_CELL_PATTERN =
-  [[[A-Za-z][\w-]*\.+\s+(?:\d+|-)\s+(?:\d+|-)]]
+  [[[A-Za-z][\w-]*\.+\s+(?:[\d,]+|-)\s+(?:[\d,]+|-)]]
 
 -- ---------------------------------------------------------------------
 -- Pure helpers — exposed so they can be unit-tested in isolation.
@@ -62,7 +62,7 @@ function M.split_columns(line)
     -- bail rather than try to recover — real `skills raw` output never
     -- produces malformed cells, and silently skipping junk is preferable
     -- to corrupting the depth-stack walk downstream.
-    local _, cell_end = line:find("^[%w%-]+%.+%s+[%d%-]+%s+[%d%-]+", depth_end)
+    local _, cell_end = line:find("^[%w%-]+%.+%s+[%d%-,]+%s+[%d%-,]+", depth_end)
     if not cell_end then break end
     cells[#cells + 1] = line:sub(start, cell_end)
     pos = cell_end + 1
@@ -79,7 +79,7 @@ end
 -- Each level of depth contributes 2 chars (`| `); we count and divide.
 function M.parse_cell(cell)
   local depth_prefix, name, level_raw, bonus_raw =
-    cell:match("^([| ]*)([%w%-]+)%.*%s+([%d%-]+)%s+([%d%-]+)$")
+    cell:match("^([| ]*)([%w%-]+)%.*%s+([%d%-,]+)%s+([%d%-,]+)$")
   if not depth_prefix then return nil end
   -- Depth prefix must be `| ` repeated; reject malformed shapes like `||`.
   -- Lua patterns can't quantify capture groups, so validate by walking.
@@ -90,7 +90,9 @@ function M.parse_cell(cell)
   local depth = #depth_prefix / 2
   local function parse_num(s)
     if s == "-" then return nil, true end           -- dash sentinel
-    if s:match("^%d+$") then return tonumber(s), true end
+    -- Tolerate comma thousands separators (e.g. "1,234") — strip then parse.
+    local stripped = s:gsub(",", "")
+    if stripped:match("^%d+$") then return tonumber(stripped), true end
     return nil, false                                -- malformed
   end
   local level, level_ok = parse_num(level_raw)

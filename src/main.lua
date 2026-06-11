@@ -59,6 +59,17 @@ local function format_thousands(n)
   return (rev:gsub("^,", ""))
 end
 
+-- Comma-tolerant numeric coercion. Wire sources are inconsistent about
+-- thousands separators: GMCP usually delivers raw numbers, MXP entities and
+-- score-brief captures are strings, and user-entered settings may include
+-- commas. Strip commas before delegating to tonumber so every numeric input
+-- to the plugin parses the same way.
+local function to_num(v)
+  if type(v) == "number" then return v end
+  if type(v) ~= "string" then return nil end
+  return tonumber((v:gsub(",", "")))
+end
+
 -- Title-case every whitespace-separated word ("dull red" → "Dull Red").
 local function title_case(s)
   if type(s) ~= "string" or s == "" then return s end
@@ -96,11 +107,11 @@ local gp             = gp_tracker.make(gp_regen)
 local last_xp = nil
 
 local function announce_xp_gain(raw_xp)
-  local n = tonumber(raw_xp)
+  local n = to_num(raw_xp)
   if not n then return end
   if last_xp ~= nil and settings.get("show_xp_gains") then
     local gain      = n - last_xp
-    local threshold = tonumber(settings.get("xp_gain_threshold")) or 0
+    local threshold = to_num(settings.get("xp_gain_threshold")) or 0
     if gain >= threshold and gain > 0 then
       mud.note(string.format("{xp: %d}", gain))
     end
@@ -141,17 +152,21 @@ local hydrate_xp_state
 
 gmcp.on("char.vitals", function(_pkg, data)
   if type(data) ~= "table" then return end
-  if data.hp and data.maxhp then state.hp = { value = data.hp, max = data.maxhp } end
-  if data.gp and data.maxgp then
-    gp.set(data.gp, data.maxgp)
+  local hp, maxhp   = to_num(data.hp),     to_num(data.maxhp)
+  local gpv, maxgp  = to_num(data.gp),     to_num(data.maxgp)
+  local burden      = to_num(data.burden)
+  local xp          = to_num(data.xp)
+  if hp and maxhp then state.hp = { value = hp, max = maxhp } end
+  if gpv and maxgp then
+    gp.set(gpv, maxgp)
     local v, m = gp.current()
     if v and m then state.gp = { value = v, max = m } end
   end
-  if data.burden then state.burden = data.burden end
-  if type(data.xp) == "number" then
-    state.xp = format_thousands(data.xp)
-    tracker.record(now_seconds(), data.xp)
-    announce_xp_gain(data.xp)
+  if burden then state.burden = burden end
+  if xp then
+    state.xp = format_thousands(xp)
+    tracker.record(now_seconds(), xp)
+    announce_xp_gain(xp)
   end
   push_state()
 end)
@@ -186,14 +201,14 @@ end)
 -- ---------------------------------------------------------------------
 
 local function refresh_hp()
-  local v = tonumber(mxp.get_entity("hp"))
-  local m = tonumber(mxp.get_entity("maxhp"))
+  local v = to_num(mxp.get_entity("hp"))
+  local m = to_num(mxp.get_entity("maxhp"))
   set_hp(v, m)
 end
 
 local function refresh_gp_from_mxp()
-  local v = tonumber(mxp.get_entity("gp"))
-  local m = tonumber(mxp.get_entity("maxgp"))
+  local v = to_num(mxp.get_entity("gp"))
+  local m = to_num(mxp.get_entity("maxgp"))
   if v and m then
     gp.set(v, m)
     push_gp_optimistic()
@@ -206,12 +221,12 @@ mxp.on_entity("gp",    refresh_gp_from_mxp)
 mxp.on_entity("maxgp", refresh_gp_from_mxp)
 
 mxp.on_entity("burden", function(_, v)
-  local b = tonumber(v)
+  local b = to_num(v)
   if b then set_burden(b) end
 end)
 
 mxp.on_entity("xp", function(_, v)
-  local x = tonumber(v)
+  local x = to_num(v)
   if x then
     set_xp(x)
     tracker.record(now_seconds(), x)
@@ -476,17 +491,20 @@ end)
 -- ---------------------------------------------------------------------
 
 mud.trigger(
-  [==[^Hp: (?P<hp>\d+) ?\((?P<maxhp>\d+)\) +(?:Gp\: (?P<gp>\d+) ?\((?P<maxgp>\d+)\)) +(?:Xp\: (?P<xp>\d+))(?:  Burden: (?P<burden>\d+)\%)?$]==],
+  [==[^Hp: (?P<hp>[\d,]+) ?\((?P<maxhp>[\d,]+)\) +(?:Gp\: (?P<gp>[\d,]+) ?\((?P<maxgp>[\d,]+)\)) +(?:Xp\: (?P<xp>[\d,]+))(?:  Burden: (?P<burden>[\d,]+)\%)?$]==],
   function(m)
     -- Defensive: some host paths invoke the callback without a match table
     -- (observed as spammy `attempt to index a nil value (local 'm')` warnings).
     -- Bail rather than fault — there's nothing to apply without captures.
     if not m then return end
-    if m.hp and m.maxhp then
-      state.hp = { value = m.hp, max = m.maxhp }
+    local hp, maxhp = to_num(m.hp), to_num(m.maxhp)
+    local gpv, maxgp = to_num(m.gp), to_num(m.maxgp)
+    local burden, xp = to_num(m.burden), to_num(m.xp)
+    if hp and maxhp then
+      state.hp = { value = hp, max = maxhp }
     end
-    if m.gp and m.maxgp then
-      gp.set(m.gp, m.maxgp)
+    if gpv and maxgp then
+      gp.set(gpv, maxgp)
       local v, mx = gp.current()
       if v and mx then state.gp = { value = v, max = mx } end
     end
@@ -494,11 +512,11 @@ mud.trigger(
     -- when the burden capture is non-empty. Lines without a burden field
     -- are combat-monitor lines, not regular vitals — updating xp from
     -- them would poison the rolling-window tracker.
-    if m.burden and m.xp then
-      state.burden = m.burden
-      state.xp     = format_thousands(m.xp)
-      tracker.record(now_seconds(), m.xp)
-      announce_xp_gain(m.xp)
+    if burden and xp then
+      state.burden = burden
+      state.xp     = format_thousands(xp)
+      tracker.record(now_seconds(), xp)
+      announce_xp_gain(xp)
     end
     push_state()
   end
