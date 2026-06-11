@@ -10,10 +10,8 @@
 -- Usage:
 --   local tracker = require("xp_tracker").make(window_seconds)
 --   tracker.record(now_seconds, current_xp)
---   local rate, ramping_seconds = tracker.rate(now_seconds)
---     rate              — xp gained over the trailing window (or partial)
---     ramping_seconds   — seconds since tracking began, or nil once the
---                         window is full (i.e. rate is a true per-window sum)
+--   local rate = tracker.rate(now_seconds)
+--     rate — xp gained over the trailing window (or partial during ramp-up)
 
 local M = {}
 
@@ -45,11 +43,7 @@ function M.make(window_seconds)
     if not first or not last then return nil end
     local delta = last.xp - first.xp
     if delta < 0 then delta = 0 end                  -- xp reset / regression
-    if started_at and (now - started_at) >= window_seconds then
-      return delta, nil
-    end
-    local elapsed = started_at and (now - started_at) or 0
-    return delta, elapsed
+    return delta
   end
 
   -- Replace the rolling-window samples in-place. Used to hydrate from

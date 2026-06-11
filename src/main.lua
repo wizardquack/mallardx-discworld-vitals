@@ -27,10 +27,6 @@ local state = {
   burden   = nil,         -- 0..100 | nil
   xp       = nil,         -- formatted string | nil
   xp_rate  = nil,         -- formatted string | nil   (trailing-window xp count)
-  xp_rate_ramping_seconds = nil,  -- number | nil; nil ⇒ window is full and
-                                  -- xp_rate is a true per-hour figure. Otherwise
-                                  -- xp_rate is the running sum since tracking
-                                  -- began (UI labels it "(Nm)" instead of "/ hr").
   xp_chart = {            -- point-in-time xp/hour samples
     enabled = settings.get("show_xp_chart") ~= false,
     series  = {},         -- array of xp/hour numbers, oldest first, max 60
@@ -239,11 +235,10 @@ end)
 -- ---------------------------------------------------------------------
 
 mud.every(5000, function()
-  local r, ramping = tracker.rate(now_seconds())
+  local r = tracker.rate(now_seconds())
   local formatted = (r ~= nil) and format_thousands(r) or nil
-  if formatted ~= state.xp_rate or ramping ~= state.xp_rate_ramping_seconds then
+  if formatted ~= state.xp_rate then
     state.xp_rate = formatted
-    state.xp_rate_ramping_seconds = ramping
     push_state()
   end
 end)
