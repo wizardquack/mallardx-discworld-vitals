@@ -149,19 +149,24 @@ function renderChart(chart) {
   chartLineEl.setAttribute("points", pts.join(" "));
 }
 
+const SHIELD_STATE_LABEL = { up: "Up", down: "Down", unknown: "Unknown" };
+const SHIELD_STATE_COLOR = { up: "ok", down: "bad", unknown: "muted" };
+
 function renderShield(key, shield) {
   const el = chipEls[key];
   if (!el) return;
   const s = (shield && shield.state) || "unknown";
   el.classList.remove("up", "down", "unknown");
   el.classList.add(s);
-  const baseTitle = SHIELD_TITLE[key];
-  const detail = (shield && shield.detail) ? shield.detail : null;
-  if (s === "up" && detail)        el.title = `${baseTitle} — ${detail}`;
-  else if (s === "down" && detail) el.title = `${baseTitle} — ${detail}`;
-  else if (s === "down")           el.title = `${baseTitle} — down`;
-  else if (s === "unknown")        el.title = `${baseTitle} — unknown`;
-  else                             el.title = baseTitle;
+  const detail = (shield && shield.detail) ? shield.detail : "";
+  const rows = [
+    { label: "Status", value: SHIELD_STATE_LABEL[s], valueColor: SHIELD_STATE_COLOR[s] },
+  ];
+  if (detail) rows.push({ label: "Detail", value: detail });
+  el.setAttribute("data-mallard-tooltip", JSON.stringify({
+    title: SHIELD_TITLE[key],
+    rows,
+  }));
 }
 
 function applyState(state) {
