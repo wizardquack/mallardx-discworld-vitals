@@ -91,7 +91,6 @@ html, body {
 
 /* ----- XP/hr chart ----- */
 .xp-chart {
-  position: relative;
   background: var(--bg-elevated, #202020);
   border: 1px solid var(--border, #2c2c2c);
   border-radius: 4px;
@@ -99,11 +98,15 @@ html, body {
   padding: 4px 6px;
   margin-top: -4px;
   box-sizing: border-box;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
 }
 .xp-chart[hidden] { display: none; }
 .xp-chart svg {
+  flex: 1 1 auto;
   display: block;
-  width: 100%;
+  min-width: 0;
   height: 100%;
   overflow: visible;
 }
@@ -120,14 +123,13 @@ html, body {
   stroke-linecap: round;
 }
 .xp-chart .xp-chart-max {
-  position: absolute;
-  top: 2px;
-  left: 4px;
+  flex: 0 0 44px;
   font-size: 9px;
   letter-spacing: 0.04em;
   color: var(--fg-muted, #777);
   font-variant-numeric: tabular-nums;
   pointer-events: none;
+  text-align: right;
 }
 
 /* ----- Shield chips ----- */
