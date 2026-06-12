@@ -88,10 +88,10 @@ const CHART_GRID_LINES = 4;
 // The x-axis represents a fixed 60-minute window anchored to "now" on the
 // right edge — must match XP_CHART_MAX_POINTS on the Lua side. With fewer
 // samples the line grows leftward from x=CHART_W instead of stretching to
-// fill the chart, so each new 10s sample advances the line by ~1/360 of
+// fill the chart, so each new 60s sample advances the line by ~1/60 of
 // width from sample one (rather than starting fast and slowing as the
 // buffer fills).
-const CHART_WINDOW_POINTS = 360;
+const CHART_WINDOW_POINTS = 60;
 
 // Round `value` up to a "nice" ceiling at the leading-digit granularity:
 // 12,345 → 20,000; 8,500 → 9,000; 99,000 → 100,000. Matches the intent

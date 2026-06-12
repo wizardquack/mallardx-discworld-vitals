@@ -94,7 +94,9 @@ local function now_seconds() return os.time() end
 -- ---------------------------------------------------------------------
 
 local gp_regen       = settings.get("gp_regen")
-local tracker        = xp_tracker.make(3600)
+local XP_CHART_MAX_POINTS = 60
+local XP_BUCKET_SECONDS   = 60
+local tracker        = xp_tracker.make(XP_BUCKET_SECONDS, XP_CHART_MAX_POINTS)
 local gp             = gp_tracker.make(gp_regen)
 
 -- Last raw XP value seen, used to compute the per-update delta for the
@@ -161,7 +163,6 @@ gmcp.on("char.vitals", function(_pkg, data)
   if burden then state.burden = burden end
   if xp then
     state.xp = format_thousands(xp)
-    tracker.record(now_seconds(), xp)
     announce_xp_gain(xp)
   end
   push_state()
@@ -225,44 +226,22 @@ mxp.on_entity("xp", function(_, v)
   local x = to_num(v)
   if x then
     set_xp(x)
-    tracker.record(now_seconds(), x)
     announce_xp_gain(x)
   end
 end)
 
 -- ---------------------------------------------------------------------
--- XP/hour ticker — recompute every 5s, push if changed.
--- ---------------------------------------------------------------------
-
-mud.every(5000, function()
-  local r = tracker.rate(now_seconds())
-  local formatted = (r ~= nil) and format_thousands(r) or nil
-  if formatted ~= state.xp_rate then
-    state.xp_rate = formatted
-    push_state()
-  end
-end)
-
--- ---------------------------------------------------------------------
--- XP/hour chart series — one sample every 10s, capped at 360 points
--- (~last hour). Each sample is the current windowed xp/hour or 0 if the
--- tracker doesn't have enough data yet, so the polyline starts at the
--- baseline rather than jumping in mid-chart. See quow's UpdateXPGraph
--- (QuowMinimap.xml:17105) for the reference implementation.
--- ---------------------------------------------------------------------
-
-local XP_CHART_MAX_POINTS = 360
-
--- ---------------------------------------------------------------------
 -- XP state persistence — keyed by `char.info.name` so the chart and the
--- "last shown" xp/hour figure survive plugin restart / relog. Strategy
--- is restore-verbatim with rolling-window self-heal:
---   * tracker samples replay through `trim(now)` and any older than the
---     window get dropped; if everything ages out, rate() goes nil and the
---     sticky `state.xp_rate` from the last session stays visible until
---     fresh XP arrives.
---   * chart series points slide off the right edge as fresh samples
---     arrive — after at most 60 minutes the chart is 100% live data.
+-- "last shown" xp/hour figure survive plugin restart / relog.
+--
+-- Strategy is restore-verbatim with no gap-filling: the persisted delta
+-- buffer + baseline are dropped back in exactly as written, so the chart
+-- at moment-of-reconnect is byte-identical to moment-of-disconnect. The
+-- next tick (≤10s after relog) appends a fresh bucket against the restored
+-- baseline; if no XP was earned offline the delta is 0 and the rolling
+-- window starts draining naturally from there. See quow's UpdateXPGraph
+-- (QuowMinimap.xml:17105) for the reference implementation we ported.
+--
 -- We gate saves on a successful hydration (or a confirmed nothing-to-
 -- hydrate) so the first post-login save can't blank out the persisted
 -- record before char.info has arrived to tell us who we are.
@@ -279,15 +258,23 @@ hydrate_xp_state = function(charname)
 
   -- Restore chart series in-place — preserves the table identity referenced
   -- from state.xp_chart.series, so we don't have to reassign + push twice.
+  -- Drop the oldest entries if the saved buffer is larger than the current
+  -- XP_CHART_MAX_POINTS (e.g., persisted under a finer-grained bucket schema
+  -- on a previous plugin version) so the renderer's fixed-width x-axis
+  -- denominator stays in sync with the actual entry count.
   local series = state.xp_chart.series
   for i = #series, 1, -1 do series[i] = nil end
   if type(saved.chart_series) == "table" then
-    for i, v in ipairs(saved.chart_series) do
-      if type(v) == "number" then series[i] = v end
+    local saved_series = saved.chart_series
+    local n = #saved_series
+    local start = (n > XP_CHART_MAX_POINTS) and (n - XP_CHART_MAX_POINTS + 1) or 1
+    for i = start, n do
+      local v = saved_series[i]
+      if type(v) == "number" then series[#series + 1] = v end
     end
   end
 
-  tracker.replace_samples(saved.tracker_samples)
+  tracker.restore(saved.xp_deltas, saved.baseline_xp)
 
   if type(saved.last_rate) == "string" and saved.last_rate ~= "" then
     state.xp_rate = saved.last_rate
@@ -299,24 +286,34 @@ end
 local function save_xp_state()
   if not hydrated_for then return end
   storage.set("xp_state/" .. hydrated_for, {
-    chart_series    = state.xp_chart.series,
-    tracker_samples = tracker._samples,
-    last_rate       = state.xp_rate,
-    saved_at        = now_seconds(),
+    chart_series = state.xp_chart.series,
+    xp_deltas    = tracker.deltas(),
+    baseline_xp  = tracker.baseline(),
+    last_rate    = state.xp_rate,
+    saved_at     = now_seconds(),
   })
 end
 
--- Push a chart sample every 10 seconds regardless of wire activity. rate()
--- is sticky during quiet stretches (trim is anchored on the newest sample's
--- ts, not wall-clock), so an idle plateau truthfully extends the last
--- observed rate. The chart renderer treats each slot as a fixed time step,
--- so we must keep advancing it or the x-axis stops corresponding to real
--- time.
-mud.every(10000, function()
-  local series = state.xp_chart.series
-  local r = tracker.rate(now_seconds()) or 0
-  series[#series + 1] = r
-  if #series > XP_CHART_MAX_POINTS then table.remove(series, 1) end
+-- Single 10s tick drives both the chart series and the headline rate.
+-- `tracker.tick(last_xp)` records one bucket-delta (0 if no XP arrived since
+-- the previous tick) and returns the new per-bucket-avg * 360 hourly rate.
+-- Idle stretches contribute 0-deltas, so the rate drains as old non-zero
+-- buckets slide off — no stickiness, no stale plateau. The chart renderer
+-- treats each slot as a fixed time step, so we keep advancing it whether or
+-- not anything changed numerically.
+mud.every(XP_BUCKET_SECONDS * 1000, function()
+  local r = tracker.tick(last_xp)
+  -- Only touch the chart + headline when tick() produced a real rate. A nil
+  -- means the tracker is still seeding its baseline (first tick of a fresh
+  -- session, or first tick after hydrate from a pre-bucket-schema save).
+  -- Treating that nil as 0 would cliff the chart edge and blank the sticky
+  -- last_rate restored by hydrate_xp_state — skip the append/format instead.
+  if r ~= nil then
+    local series = state.xp_chart.series
+    series[#series + 1] = r
+    while #series > XP_CHART_MAX_POINTS do table.remove(series, 1) end
+    state.xp_rate = format_thousands(r)
+  end
   save_xp_state()
   push_state()
 end)
@@ -516,7 +513,6 @@ mud.trigger(
     if burden and xp then
       state.burden = burden
       state.xp     = format_thousands(xp)
-      tracker.record(now_seconds(), xp)
       announce_xp_gain(xp)
     end
     push_state()
