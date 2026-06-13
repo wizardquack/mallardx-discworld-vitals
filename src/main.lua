@@ -578,9 +578,26 @@ local function print_skills_diff(charname, changes)
   end
   mud.note(string.format("skills-refresh: %d skill%s changed for %s:",
     #changes, #changes == 1 and "" or "s", charname))
+  -- Two-pass: precompute formatted cells and per-column max widths so the
+  -- path column left-pads and the level/bonus columns right-justify, e.g.
+  --   crafts.smithing.gold              : 1113/815 → 1114/815
+  --   adventuring.points                :   89/143 →   99/147
+  -- Width is measured in bytes; UTF-8 chars in the values (only `—` for
+  -- added/removed paths) under-pad by 2 bytes each, which is acceptable
+  -- for a rare edge case and keeps the alignment math trivial.
+  local rows = {}
+  local w_path, w_old, w_new = 0, 0, 0
   for _, c in ipairs(changes) do
-    mud.note(string.format("  %s: %s → %s",
-      c.path, fmt(c.old_lvl, c.old_bonus), fmt(c.new_lvl, c.new_bonus)))
+    local old = fmt(c.old_lvl, c.old_bonus)
+    local new = fmt(c.new_lvl, c.new_bonus)
+    rows[#rows + 1] = { path = c.path, old = old, new = new }
+    if #c.path > w_path then w_path = #c.path end
+    if #old    > w_old  then w_old  = #old    end
+    if #new    > w_new  then w_new  = #new    end
+  end
+  local line_fmt = "  %-" .. w_path .. "s : %" .. w_old .. "s → %" .. w_new .. "s"
+  for _, r in ipairs(rows) do
+    mud.note(string.format(line_fmt, r.path, r.old, r.new))
   end
 end
 
