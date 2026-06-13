@@ -39,12 +39,15 @@ M.KEPT_STATS = {
 
 -- Split a raw line into cells by walking the cell *structure* — not by
 -- whitespace count. Inter-cell gaps shrink as `cols` widens (7 spaces at
--- cols 80, ~3 spaces at cols 999 when a unit-bearing cell is in play),
--- so a whitespace-count splitter can't disambiguate. Each cell is
--- `<name><ws><dots>+<ws><value>[<sp><unit>]`. We strictly match name+
--- dots+value, then optionally extend through a single-space-separated
--- unit if the result is followed by end-of-line or a 2+ space inter-cell
--- gap (distinguishing "176 cm" from the leading space of "       Dexterity").
+-- cols 80, ~3 spaces at cols 999 when a unit- or boost-bearing cell is in
+-- play), so a whitespace-count splitter can't disambiguate. Each cell is
+-- `<name><ws><dots>+<ws><value>[<sp><suffix>]` where the suffix is either
+-- a unit (`cm`/`kg`) or a temporary-boost annotation (`(N)` or `(-N)`).
+-- We strictly match name+dots+value, then optionally extend through one of
+-- those single-space-separated suffixes. The unit/end-of-cell ambiguity
+-- (distinguishing `176 cm` from the leading space of `       Dexterity`)
+-- is resolved by requiring end-of-line or a 2+ space inter-cell gap after
+-- the suffix; the boost form is self-delimiting via its closing paren.
 function M.split_columns(line)
   local cells = {}
   local pos = 1
@@ -55,12 +58,19 @@ function M.split_columns(line)
     -- Match name + dots + value. Anchored at `start` via `^`.
     local _, value_end = line:find("^%a+%s+%.+%s+[%d%.]+", start)
     if not value_end then break end
-    -- Optionally consume a unit (` cm`, ` kg`, ...). Only single-space
-    -- separation counts as a unit; multi-space means a fresh inter-cell
-    -- gap and the next token starts a new cell.
-    local _, unit_end = line:find("^ %a+", value_end + 1)
-    if unit_end then
-      if unit_end >= len or line:sub(unit_end + 1, unit_end + 2) == "  " then
+    -- Boost annotation takes priority — `(N)` or `(-N)` after a single
+    -- space, self-delimiting, no end-of-cell heuristic needed.
+    local _, boost_end = line:find("^ %(%-?%d+%)", value_end + 1)
+    if boost_end then
+      value_end = boost_end
+    else
+      -- Otherwise try a unit (` cm`, ` kg`, ...). Only single-space
+      -- separation counts as a unit; multi-space means a fresh inter-cell
+      -- gap and the next token starts a new cell.
+      local _, unit_end = line:find("^ %a+", value_end + 1)
+      if unit_end and
+         (unit_end >= len or line:sub(unit_end + 1, unit_end + 2) == "  ")
+      then
         value_end = unit_end
       end
     end
@@ -71,17 +81,37 @@ function M.split_columns(line)
 end
 
 -- Match a single cell. Returns { name (lowercase), value (number),
--- unit (string or nil) } or nil on no match.
+-- unit (string or nil), boost (number or nil) } or nil on no match.
+--
+-- When a temporary-boost annotation like `Constitution ... 12 (2)` is
+-- present, the displayed `12` is the boosted value and `(2)` is the
+-- magnitude — what we want to persist is the raw base stat, so `value`
+-- here is `displayed - boost = 10`. The boost is kept as metadata in
+-- case a future consumer cares to display "currently boosted".
 function M.parse_cell(cell)
-  local name, value_raw, unit =
-    cell:match("^(%a+)%s+%.+%s+([%d%.]+)%s+(%a+)$")
-  if not name then
-    name, value_raw = cell:match("^(%a+)%s+%.+%s+([%d%.]+)$")
+  -- Boost form: `<name> <dots> <value> (<boost>)`.
+  local name, value_raw, boost_raw =
+    cell:match("^(%a+)%s+%.+%s+([%d%.]+)%s+%((%-?%d+)%)$")
+  if name then
+    local value = tonumber(value_raw)
+    local boost = tonumber(boost_raw)
+    if not (value and boost) then return nil end
+    return { name = name:lower(), value = value - boost, boost = boost }
   end
+  -- Unit form: `<name> <dots> <value> <unit>`.
+  local unit
+  name, value_raw, unit = cell:match("^(%a+)%s+%.+%s+([%d%.]+)%s+(%a+)$")
+  if name then
+    local value = tonumber(value_raw)
+    if not value then return nil end
+    return { name = name:lower(), value = value, unit = unit }
+  end
+  -- Plain form: `<name> <dots> <value>`.
+  name, value_raw = cell:match("^(%a+)%s+%.+%s+([%d%.]+)$")
   if not name then return nil end
   local value = tonumber(value_raw)
   if not value then return nil end
-  return { name = name:lower(), value = value, unit = unit }
+  return { name = name:lower(), value = value }
 end
 
 -- Predicate: does this line look like it contains any stat-cell data?
