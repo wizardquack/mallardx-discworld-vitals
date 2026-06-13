@@ -122,8 +122,25 @@ local function set_hp(v, m)
   if v and m then state.hp = { value = v, max = m }; push_state() end
 end
 
+-- GP-full chime is arm-then-fire: a dip below 75% arms it, the next refill to
+-- full fires it. Without the arming step, a single small cast that nicks GP
+-- by a few points would re-trigger the chime every combat round. Threshold
+-- ported from Quow's UpdateVitals (QuowMinimap.xml:17371).
+local gp_full_armed = false
+local GP_FULL_ARM_THRESHOLD = 0.75
+
 local function set_gp(v, m)
-  if v and m then state.gp = { value = v, max = m }; push_state() end
+  if not (v and m) then return end
+  state.gp = { value = v, max = m }
+  if m > 0 and v < m * GP_FULL_ARM_THRESHOLD then
+    gp_full_armed = true
+  elseif v >= m and gp_full_armed then
+    gp_full_armed = false
+    if settings.get("gp_full_sound") then
+      mud.play_sound("mallard:ding-ding-ding")
+    end
+  end
+  push_state()
 end
 
 local function push_gp_optimistic()
@@ -159,7 +176,7 @@ gmcp.on("char.vitals", function(_pkg, data)
   if gpv and maxgp then
     gp.set(gpv, maxgp)
     local v, m = gp.current()
-    if v and m then state.gp = { value = v, max = m } end
+    if v and m then set_gp(v, m) end
   end
   if burden then state.burden = burden end
   if xp then
@@ -505,7 +522,7 @@ mud.trigger(
     if gpv and maxgp then
       gp.set(gpv, maxgp)
       local v, mx = gp.current()
-      if v and mx then state.gp = { value = v, max = mx } end
+      if v and mx then set_gp(v, mx) end
     end
     -- Quow's logic (QuowMinimap.xml:13783-13791): only update xp+burden
     -- when the burden capture is non-empty. Lines without a burden field

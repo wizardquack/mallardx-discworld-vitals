@@ -63,3 +63,9 @@ min = 1
 max = 1000000
 label = "XP gain threshold"
 description = "Minimum XP delta required to print a gain note."
+
+[settings.gp_full_sound]
+type = "bool"
+default = false
+label = "GP-full sound"
+description = "Play the mallard:ding-ding-ding chime when your GP refills to maximum."
