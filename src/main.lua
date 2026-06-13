@@ -11,6 +11,7 @@
 local xp_tracker    = require("xp_tracker")
 local gp_tracker    = require("gp_tracker")
 local skills_parser = require("skills_parser")
+local stats_parser  = require("stats_parser")
 
 local panel = mud.panel("vitals")
 
@@ -692,6 +693,140 @@ events.on("net.mallard.discworld.skills.request", function(d)
   local snapshot = storage.get("skills/" .. charname)
   if not snapshot then return end
   events.emit("net.mallard.discworld.skills.updated", {
+    charname = charname,
+    snapshot = snapshot,
+    replay   = true,
+  })
+end)
+
+-- ---------------------------------------------------------------------
+-- Stats — parse `score stats` into the five core stats (constitution,
+-- dexterity, intelligence, strength, wisdom), store per character, and
+-- broadcast `net.mallard.discworld.stats.updated` so peer plugins can
+-- read stat state without re-parsing the wire format. Same late-binding
+-- replay convention as skills: fire `net.mallard.discworld.stats.request`
+-- to get a replay of the cached snapshot.
+--
+-- Entry point: `/stats-refresh` slash alias. As with skills, we don't
+-- parse bare `score stats` typed by the user — gating on the alias keeps
+-- the absorb trigger cold until we know an authoritative output is en
+-- route.
+--
+-- Format details and the cell splitter live in src/stats_parser.lua.
+-- ---------------------------------------------------------------------
+
+local STATS_ARM_TIMEOUT_SECONDS = 5
+local STATS_IDLE_FLUSH_SECONDS  = 1
+
+-- Diff two stat snapshots into a sorted, human-readable changes string,
+-- e.g. "strength 14 → 15, wisdom 11 → 12". Returns "" if nothing changed.
+-- Unlike skills (where a refresh can light up dozens of leaves), stat
+-- changes are rare and small enough to inline in the completion note,
+-- so we skip the clickable-drilldown UX entirely.
+local function diff_stats_inline(prev, current)
+  local changes = {}
+  local seen = {}
+  for name, v in pairs(current.stats) do
+    seen[name] = true
+    local old = prev.stats and prev.stats[name]
+    if v ~= old then
+      changes[#changes + 1] = { name = name, old = old, new = v }
+    end
+  end
+  if prev.stats then
+    for name, v in pairs(prev.stats) do
+      if not seen[name] then
+        changes[#changes + 1] = { name = name, old = v, new = nil }
+      end
+    end
+  end
+  table.sort(changes, function(a, b) return a.name < b.name end)
+  local function fmt(v) return v ~= nil and tostring(v) or "—" end
+  local parts = {}
+  for i, c in ipairs(changes) do
+    parts[i] = string.format("%s %s → %s", c.name, fmt(c.old), fmt(c.new))
+  end
+  return table.concat(parts, ", ")
+end
+
+local stats_sm = stats_parser.make({
+  -- Exactly five core stats in the snapshot; setting the floor at 5 means
+  -- we drop interrupted/partial captures rather than persist an incomplete
+  -- record over a previously-good one.
+  min_stats = 5,
+  on_log    = function(_level, msg) mud.note(msg) end,
+  on_flush  = function(snapshot)
+    local charname = vars.get("char.info.name")
+    if not charname or charname == "" then
+      mud.note("stats_parser: no char.info.name yet; dropping snapshot.")
+      return
+    end
+    local prev = storage.get("stats/" .. charname)
+    storage.set("stats/" .. charname, snapshot)
+    storage.set("stats/_last_active", charname)
+    events.emit("net.mallard.discworld.stats.updated", {
+      charname = charname,
+      snapshot = snapshot,
+    })
+    local prefix = string.format("stats-refresh: finished refreshing %d stats for %s",
+      snapshot.stat_count, charname)
+    if not prev then
+      mud.note(prefix .. " (first refresh)")
+      return
+    end
+    local changes = diff_stats_inline(prev, snapshot)
+    if changes == "" then
+      mud.note(prefix .. " (no stats changed since last refresh)")
+    else
+      mud.note(prefix .. " (" .. changes .. ")")
+    end
+  end,
+})
+
+-- Parallel to the skills 250 ms poll: handles both arm-timeout and idle-
+-- flush. Independent of the skills poll so the state machines stay
+-- decoupled and so removing either parser later is a single-section edit.
+local last_stats_absorb_at = nil
+local function mark_stats_absorbed() last_stats_absorb_at = now_seconds() end
+
+mud.every(250, function()
+  local now = now_seconds()
+  stats_sm.try_arm_timeout(now, STATS_ARM_TIMEOUT_SECONDS)
+  if last_stats_absorb_at and (now - last_stats_absorb_at) >= STATS_IDLE_FLUSH_SECONDS then
+    last_stats_absorb_at = nil
+    stats_sm.try_flush(now)
+  end
+end)
+
+-- Absorber: any line containing at least one stat-shaped cell. `on_line`
+-- returns true only when we're actively collecting (= /stats-refresh
+-- armed us), so the gag policy matches skills: hide ours, leave manual
+-- `score stats` alone. `mud.trigger` fires once per regex match, so a
+-- packed cols-999 line gets gagged once per cell; the effect is idempotent.
+mud.trigger(stats_parser.LINE_HAS_STAT_CELL_PATTERN, function(m)
+  if stats_sm.on_line(m.text) then
+    m:gag()
+    mark_stats_absorbed()
+  end
+end)
+
+-- Slash alias — the only sanctioned entry point.
+mud.alias([[^/stats-refresh$]], function()
+  stats_sm.arm(now_seconds())
+  mud.note("stats-refresh: working...")
+  mud.send("score stats", { silent = true })
+end, { name = "stats_refresh" })
+
+-- Late-binding read surface — same convention as skills.request.
+events.on("net.mallard.discworld.stats.request", function(d)
+  d = (type(d) == "table") and d or {}
+  local charname = d.charname
+                or vars.get("char.info.name")
+                or storage.get("stats/_last_active")
+  if not charname or charname == "" then return end
+  local snapshot = storage.get("stats/" .. charname)
+  if not snapshot then return end
+  events.emit("net.mallard.discworld.stats.updated", {
     charname = charname,
     snapshot = snapshot,
     replay   = true,
