@@ -1,6 +1,6 @@
 id = "net.mallard.discworld-vitals"
 name = "Discworld Vitals"
-version = "0.6.2"
+version = "0.7.0"
 description = "A vitals panel for Discworld - XP, XP rate, shields, HP, GP, burden - and a `skills raw` parser for sharing skill state with other plugins"
 language = "lua"
 entry = "src/main.lua"
@@ -10,9 +10,11 @@ authors = ["Wizard Quack"]
 license = "MIT"
 
 [permissions]
-# char.info is mirrored into world vars (`char.info.<key>`) and re-broadcast as
-# `net.mallard.discworld.char_info` so discworld-grouping can read it without
-# needing its own gmcp permission.
+# char.info: used internally to key XP / skills / stats persistence by
+# character name. We no longer mirror to vars or broadcast a
+# `net.mallard.discworld.char_info` event — peer plugins that need
+# char.info now subscribe directly via their own gmcp_access (cheap and
+# self-healing on reload).
 gmcp_access = ["char.vitals", "char.info", "char.info.*"]
 # Required for /skills-refresh, which sends `skills raw` to drive the parser.
 sends = true

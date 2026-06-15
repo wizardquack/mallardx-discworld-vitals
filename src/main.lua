@@ -194,16 +194,6 @@ end)
 -- ---------------------------------------------------------------------
 gmcp.on("char.info", function(_pkg, data)
   if type(data) ~= "table" then return end
-  for k, v in pairs(data) do
-    local key = "char.info." .. tostring(k)
-    local t = type(v)
-    if t == "string" or t == "number" or t == "boolean" then
-      vars.set(key, v)
-    elseif v == nil then
-      vars.delete(key)
-    end
-  end
-  events.emit("net.mallard.discworld.char_info", data)
   -- char.info is the first wire-side hint of who we're logged in as.
   -- Hydrate is idempotent per (charname) — repeated info updates with the
   -- same name don't re-hydrate. A name change (alt switch) triggers a
@@ -628,7 +618,7 @@ local skills_sm = skills_parser.make({
     -- char.info.name is guaranteed by login ordering — see plugin.toml
     -- header. If it's somehow missing we'd rather drop than write under a
     -- placeholder key that could collide across alts.
-    local charname = vars.get("char.info.name")
+    local charname = gmcp.get("char.info.name")
     if not charname or charname == "" then
       mud.note("skills_parser: no char.info.name yet; dropping snapshot.")
       return
@@ -721,7 +711,7 @@ end, { name = "skills_refresh" })
 events.on("net.mallard.discworld.skills.request", function(d)
   d = (type(d) == "table") and d or {}
   local charname = d.charname
-                or vars.get("char.info.name")
+                or gmcp.get("char.info.name")
                 or storage.get("skills/_last_active")
   if not charname or charname == "" then return end
   local snapshot = storage.get("skills/" .. charname)
@@ -790,7 +780,7 @@ local stats_sm = stats_parser.make({
   min_stats = 5,
   on_log    = function(_level, msg) mud.note(msg) end,
   on_flush  = function(snapshot)
-    local charname = vars.get("char.info.name")
+    local charname = gmcp.get("char.info.name")
     if not charname or charname == "" then
       mud.note("stats_parser: no char.info.name yet; dropping snapshot.")
       return
@@ -855,7 +845,7 @@ end, { name = "stats_refresh" })
 events.on("net.mallard.discworld.stats.request", function(d)
   d = (type(d) == "table") and d or {}
   local charname = d.charname
-                or vars.get("char.info.name")
+                or gmcp.get("char.info.name")
                 or storage.get("stats/_last_active")
   if not charname or charname == "" then return end
   local snapshot = storage.get("stats/" .. charname)
@@ -868,37 +858,15 @@ events.on("net.mallard.discworld.stats.request", function(d)
 end)
 
 -- ---------------------------------------------------------------------
--- Startup hydration from cached GMCP state.
---
--- gmcp.on only catches future pushes, so on plugin reload mid-session our
--- mirror sat empty until Discworld next bumped char.info — which could
--- be never if the player isn't actively playing. Downstream plugins that
--- read `vars.get("char.info.<key>")` or wait for the
--- `net.mallard.discworld.char_info` event (discworld-grouping,
--- discworld-chat, discworld-vault-tracker, …) were silently stuck.
---
--- Read the engine's GMCP mirror via gmcp.get for the keys we mirror.
--- gmcp.get exact-path-matches against plugin.toml's gmcp_access globs,
--- which is why we list both "char.info" and "char.info.*" up there.
--- Runs at the bottom of main.lua so `hydrate_xp_state` is already
--- assigned (it's forward-declared up top).
+-- Startup hydration — rehydrate the XP buffer + per-character state on
+-- plugin reload. gmcp.on only catches future char.info pushes; on a
+-- mid-session reload the last frame is already gone, so we'd sit with
+-- an empty XP chart and an unidentified character until Discworld next
+-- bumped char.info. Runs at the bottom of main.lua so `hydrate_xp_state`
+-- is already assigned (it's forward-declared up top).
 -- ---------------------------------------------------------------------
 
-local CHAR_INFO_KEYS = {
-  "name", "capname", "surname", "race", "guild", "title", "gender", "level",
-}
-
-local cached_char_info = {}
-for _, key in ipairs(CHAR_INFO_KEYS) do
-  local v = gmcp.get("char.info." .. key)
-  if v ~= nil and v ~= "" then
-    cached_char_info[key] = v
-    vars.set("char.info." .. key, v)
-  end
-end
-if next(cached_char_info) ~= nil then
-  events.emit("net.mallard.discworld.char_info", cached_char_info)
-  if type(cached_char_info.name) == "string" then
-    hydrate_xp_state(cached_char_info.name)
-  end
+local cached_name = gmcp.get("char.info.name")
+if type(cached_name) == "string" and cached_name ~= "" then
+  hydrate_xp_state(cached_name)
 end
