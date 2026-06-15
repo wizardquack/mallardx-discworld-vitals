@@ -722,7 +722,7 @@ mud.command("skills-refresh", function()
   mud.note("skills-refresh: working...")
   mud.send("skills raw", { silent = true })
 end, {
-  description = "Re-fetch your skills from the MUD to refresh the vitals panel.",
+  description = "Re-fetch your skills from the MUD.",
   usage = "skills-refresh",
 })
 
@@ -862,7 +862,7 @@ mud.command("stats-refresh", function()
   mud.note("stats-refresh: working...")
   mud.send("score stats", { silent = true })
 end, {
-  description = "Re-fetch your stats from the MUD to refresh the vitals panel.",
+  description = "Re-fetch your stats from the MUD.",
   usage = "stats-refresh",
 })
 
