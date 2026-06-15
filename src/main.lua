@@ -697,12 +697,12 @@ mud.trigger(skills_parser.LINE_HAS_SKILL_CELL_PATTERN, function(m)
   end
 end)
 
--- Slash alias — the only sanctioned entry point.
-mud.alias([[^/skills-refresh$]], function()
+-- Client command — the only sanctioned entry point.
+mud.command("skills-refresh", function()
   skills_sm.arm(now_seconds())
   mud.note("skills-refresh: working...")
   mud.send("skills raw", { silent = true })
-end, { name = "skills_refresh" })
+end)
 
 -- Late-binding read surface. A consumer plugin that loaded after the parse
 -- can fire this event with an optional `charname`; we reply by re-emitting
@@ -834,12 +834,12 @@ mud.trigger(stats_parser.LINE_HAS_STAT_CELL_PATTERN, function(m)
   end
 end)
 
--- Slash alias — the only sanctioned entry point.
-mud.alias([[^/stats-refresh$]], function()
+-- Client command — the only sanctioned entry point.
+mud.command("stats-refresh", function()
   stats_sm.arm(now_seconds())
   mud.note("stats-refresh: working...")
   mud.send("score stats", { silent = true })
-end, { name = "stats_refresh" })
+end)
 
 -- Late-binding read surface — same convention as skills.request.
 events.on("net.mallard.discworld.stats.request", function(d)
