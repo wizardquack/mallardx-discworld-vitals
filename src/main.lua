@@ -161,6 +161,25 @@ end
 local hydrate_xp_state
 
 -- ---------------------------------------------------------------------
+-- Live settings updates. Three of our five settings (show_xp_gains,
+-- xp_gain_threshold, gp_full_sound) are read inline at point-of-use, so
+-- they auto-apply without any wiring here. The remaining two are cached
+-- at startup and need a handler to re-apply on change. With every setting
+-- handled in-place, `mud.request_restart()` is never called — settings
+-- changes never restart the VM, preserving the XP tracker buffer + the
+-- gp optimistic-regen state across edits.
+-- ---------------------------------------------------------------------
+
+settings.on("change", function(key, new, _old)
+  if key == "gp_regen" then
+    gp.set_regen(to_num(new) or 3)
+  elseif key == "show_xp_chart" then
+    state.xp_chart.enabled = new ~= false
+    push_state()
+  end
+end)
+
+-- ---------------------------------------------------------------------
 -- GMCP — `char.vitals` carries authoritative HP/GP/burden/XP on login
 -- and (on some Discworld configs) periodic refreshes. MXP entity pushes
 -- below are the primary real-time update mechanism.
