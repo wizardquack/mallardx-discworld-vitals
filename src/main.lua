@@ -866,3 +866,39 @@ events.on("net.mallard.discworld.stats.request", function(d)
     replay   = true,
   })
 end)
+
+-- ---------------------------------------------------------------------
+-- Startup hydration from cached GMCP state.
+--
+-- gmcp.on only catches future pushes, so on plugin reload mid-session our
+-- mirror sat empty until Discworld next bumped char.info — which could
+-- be never if the player isn't actively playing. Downstream plugins that
+-- read `vars.get("char.info.<key>")` or wait for the
+-- `net.mallard.discworld.char_info` event (discworld-grouping,
+-- discworld-chat, discworld-vault-tracker, …) were silently stuck.
+--
+-- Read the engine's GMCP mirror via gmcp.get for the keys we mirror.
+-- gmcp.get exact-path-matches against plugin.toml's gmcp_access globs,
+-- which is why we list both "char.info" and "char.info.*" up there.
+-- Runs at the bottom of main.lua so `hydrate_xp_state` is already
+-- assigned (it's forward-declared up top).
+-- ---------------------------------------------------------------------
+
+local CHAR_INFO_KEYS = {
+  "name", "capname", "surname", "race", "guild", "title", "gender", "level",
+}
+
+local cached_char_info = {}
+for _, key in ipairs(CHAR_INFO_KEYS) do
+  local v = gmcp.get("char.info." .. key)
+  if v ~= nil and v ~= "" then
+    cached_char_info[key] = v
+    vars.set("char.info." .. key, v)
+  end
+end
+if next(cached_char_info) ~= nil then
+  events.emit("net.mallard.discworld.char_info", cached_char_info)
+  if type(cached_char_info.name) == "string" then
+    hydrate_xp_state(cached_char_info.name)
+  end
+end
