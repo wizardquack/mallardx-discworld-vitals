@@ -721,7 +721,10 @@ mud.command("skills-refresh", function()
   skills_sm.arm(now_seconds())
   mud.note("skills-refresh: working...")
   mud.send("skills raw", { silent = true })
-end)
+end, {
+  description = "Re-fetch your skills from the MUD to refresh the vitals panel.",
+  usage = "skills-refresh",
+})
 
 -- Late-binding read surface. A consumer plugin that loaded after the parse
 -- can fire this event with an optional `charname`; we reply by re-emitting
@@ -858,7 +861,10 @@ mud.command("stats-refresh", function()
   stats_sm.arm(now_seconds())
   mud.note("stats-refresh: working...")
   mud.send("score stats", { silent = true })
-end)
+end, {
+  description = "Re-fetch your stats from the MUD to refresh the vitals panel.",
+  usage = "stats-refresh",
+})
 
 -- Late-binding read surface — same convention as skills.request.
 events.on("net.mallard.discworld.stats.request", function(d)
