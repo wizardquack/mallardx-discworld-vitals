@@ -955,16 +955,38 @@ local function plan_inputs(charname)
   }
 end
 
+-- Palette for /goal + /goals output. Named ANSI colours (indices 0–15) so the
+-- active theme — light or dark — resolves them to legible values; body text is
+-- left unstyled to inherit the theme foreground, and emphasis leans on bold
+-- rather than a white/black fg that could wash out on one theme or the other.
+local GP = {
+  label   = { bold = true },                      -- headers / "goals:" label
+  char    = { fg = "cyan", bold = true },         -- character name
+  skill   = { fg = "cyan" },                      -- skill paths / abbreviations
+  target  = { bold = true },                      -- the goal value (theme-neutral)
+  optimal = { fg = "light green", bold = true },  -- cheapest / headline cost
+  selfc   = { fg = "yellow" },                    -- self-teach (the dear path)
+  done    = { fg = "light green", bold = true },  -- met goals
+  added   = { fg = "light green" },               -- added confirmation
+  warn    = { fg = "yellow" },                    -- updated / soft warnings
+  err     = { fg = "light red" },                 -- errors
+  details = { fg = "cyan", underline = true },    -- clickable drill-down
+  afford  = { fg = "light green" },               -- afford-now deltas
+  cmd     = { fg = "light cyan", bold = true },   -- command literals in help
+}
+
+local function sp(text, style) return mud.span(text, style) end
+
 -- Resolve a user-typed skill query, printing a helpful message and returning
 -- nil if it can't be pinned to exactly one skill.
 local function resolve_goal_skill(charname, query)
   local path, candidates = planner.resolve_skill(query, known_skill_paths(charname))
   if path then return path end
   if #candidates == 0 then
-    mud.note("goal: no skill matches '" .. query .. "'.")
+    mud.note(sp("goal: no skill matches '" .. query .. "'.", GP.err))
   else
-    mud.note("goal: '" .. query .. "' is ambiguous — did you mean:")
-    for _, c in ipairs(candidates) do mud.note("  " .. c) end
+    mud.note(sp("goal: '" .. query .. "' is ambiguous — did you mean:", GP.err))
+    for _, c in ipairs(candidates) do mud.note(sp("  " .. c, GP.skill)) end
   end
   return nil
 end
@@ -972,17 +994,17 @@ end
 local function goal_add(charname, rest)
   local skill_q, kind, value_s = rest:match("^(%S+)%s+(%S+)%s+(%S+)$")
   if not skill_q then
-    mud.note("goal: usage — /goal add <skill> <level|bonus> <value>")
+    mud.note(sp("goal: usage — /goal add <skill> <level|bonus> <value>", GP.err))
     return
   end
   kind = kind:lower()
   if kind ~= "level" and kind ~= "bonus" then
-    mud.note("goal: type must be 'level' or 'bonus' (got '" .. kind .. "').")
+    mud.note(sp("goal: type must be 'level' or 'bonus' (got '" .. kind .. "').", GP.err))
     return
   end
   local value = to_num(value_s)
   if not value or value <= 0 then
-    mud.note("goal: value must be a positive number (got '" .. value_s .. "').")
+    mud.note(sp("goal: value must be a positive number (got '" .. value_s .. "').", GP.err))
     return
   end
   value = math.floor(value)
@@ -1002,13 +1024,17 @@ local function goal_add(charname, rest)
     list[#list + 1] = { skill = path, type = kind, value = value }
   end
   save_goals(charname, list)
-  mud.note(string.format("goal %s: %s %s %d",
-    replaced and "updated" or "added", path, kind, value))
+  mud.note(
+    sp("goal " .. (replaced and "updated" or "added") .. ": ",
+       replaced and GP.warn or GP.added),
+    sp(path, GP.skill),
+    sp("  " .. kind .. " "),
+    sp(tostring(value), GP.target))
 end
 
 local function goal_rm(charname, rest)
   local skill_q = rest:match("^(%S+)")
-  if not skill_q then mud.note("goal: usage — /goal rm <skill>") return end
+  if not skill_q then mud.note(sp("goal: usage — /goal rm <skill>", GP.err)) return end
   local path = resolve_goal_skill(charname, skill_q)
   if not path then return end
   local list = load_goals(charname)
@@ -1016,58 +1042,75 @@ local function goal_rm(charname, rest)
   for _, g in ipairs(list) do
     if g.skill == path then found = true else kept[#kept + 1] = g end
   end
-  if not found then mud.note("goal: no goal set for " .. path .. ".") return end
+  if not found then mud.note(sp("goal: no goal set for " .. path .. ".", GP.err)) return end
   save_goals(charname, kept)
-  mud.note("goal removed: " .. path)
+  mud.note(sp("goal removed: ", GP.warn), sp(path, GP.skill))
 end
 
 local function goal_help()
-  mud.note("goal — manage skill goals (a target level or bonus per skill):")
-  mud.note("  /goal add <skill> <level|bonus> <value>   add or update a goal")
-  mud.note("  /goal rm <skill>                          remove a goal")
-  mud.note("  /goal clear                               remove all goals")
-  mud.note("  /goal list   (or /goals)                  show progress + XP cost")
-  mud.note("  /goal help                                show this help")
-  mud.note("  skills accept abbreviations: ma.sp.of → magic.spells.offensive")
-  mud.note("  examples:  /goal add fi.me.sw bonus 550   ·   /goal add ma.sp.of level 200")
+  local function line(cmd, desc)
+    mud.note(sp(string.format("  %-40s", cmd), GP.cmd), sp(desc))
+  end
+  mud.note(sp("goal — manage skill goals (a target level or bonus per skill):", GP.label))
+  line("/goal add <skill> <level|bonus> <value>", "add or update a goal")
+  line("/goal rm <skill>",                        "remove a goal")
+  line("/goal clear",                             "remove all goals")
+  line("/goal list   (or /goals)",                "show progress + XP cost")
+  line("/goal help",                              "show this help")
+  mud.note(sp("  skills accept abbreviations: "), sp("ma.sp.of", GP.skill),
+    sp(" → "), sp("magic.spells.offensive", GP.skill))
+  mud.note(sp("  examples:  "), sp("/goal add fi.me.sw bonus 550", GP.cmd),
+    sp("   ·   "), sp("/goal add ma.sp.of level 200", GP.cmd))
 end
 
--- Per-goal drill-down, fired by the clickable `details` span. Lays the
--- scenarios out as separate labelled figures so a future "specific teacher"
--- row drops in between optimal and self without reshaping anything.
+-- Per-goal drill-down, fired by the clickable `show details` span. Lays the
+-- scenarios out as separate labelled figures (green = optimal, yellow = self)
+-- so a future "specific teacher" row drops in between without reshaping.
 local function print_goal_detail(row)
-  local span = (row.target_level and row.from_level)
+  local levels = (row.target_level and row.from_level)
     and (row.target_level - row.from_level) or nil
-  mud.note(string.format("%s: bonus %d → %d  (level %d → %d%s)",
-    row.skill, row.from_bonus, row.target_bonus or row.from_bonus,
-    row.from_level, row.target_level or row.from_level,
-    span and string.format(", +%d levels", span) or ""))
+  mud.note(
+    sp(row.skill, { fg = "cyan", bold = true }),
+    sp(": bonus " .. row.from_bonus .. " → "),
+    sp(tostring(row.target_bonus or row.from_bonus), GP.target),
+    sp(string.format("  (level %d → %d%s)",
+      row.from_level, row.target_level or row.from_level,
+      levels and string.format(", +%d levels", levels) or "")))
   for _, sc in ipairs(row.scenarios or {}) do
+    local color = (sc.key == "optimal") and "light green"
+      or (sc.key == "self") and "yellow" or nil
     local cost_str = sc.reachable and (format_thousands(sc.total_xp) .. " xp") or "n/a"
-    mud.note(string.format("  %-15s : %s", sc.label, cost_str))
+    mud.note(
+      sp(string.format("  %-15s : ", sc.label), color and { fg = color } or nil),
+      sp(cost_str, color and { fg = color, bold = true } or nil))
   end
   if row.afford then
-    mud.note(string.format("  %-15s : +%d levels (+%d bonus) for %s xp",
-      "afford now", row.afford.level - row.from_level,
-      row.afford.bonus - row.from_bonus, format_thousands(row.afford.spent)))
+    mud.note(
+      sp(string.format("  %-15s : ", "afford now"), GP.skill),
+      sp(string.format("+%d levels (+%d bonus)",
+        row.afford.level - row.from_level, row.afford.bonus - row.from_bonus), GP.afford),
+      sp(string.format(" for %s xp", format_thousands(row.afford.spent))))
   end
 end
 
 local function show_goals(charname)
   local inputs = plan_inputs(charname)
   if #inputs.goals == 0 then
-    mud.note("goals: none set. Add one with " ..
-      "/goal add <skill> <level|bonus> <value>.")
+    mud.note(sp("goals: none set. Add one with ", GP.warn),
+      sp("/goal add <skill> <level|bonus> <value>", GP.cmd))
     return
   end
   if type(storage.get("skills/" .. charname)) ~= "table" then
-    mud.note("goals: no skills snapshot yet — run /skills-refresh for " ..
-      "accurate costs (showing from level 0 until then).")
+    mud.note(sp("goals: no skills snapshot yet — run ", GP.warn),
+      sp("/skills-refresh", GP.cmd),
+      sp(" for accurate costs (showing from level 0 until then).", GP.warn))
   end
 
   local result = planner.plan(inputs)
 
   -- Precompute display cells + column widths for a tidy left-aligned table.
+  -- Target is kept as (metric, from, to) so the goal value can be emphasised
+  -- while the cell as a whole still pads to a common width.
   local rows = {}
   local w_skill, w_target = 0, 0
   for _, row in ipairs(result.goals) do
@@ -1077,40 +1120,56 @@ local function show_goals(charname)
     elseif row.error then
       cell.note = "(error: " .. row.error .. ")"
     elseif row.done then
-      cell.target = string.format("bonus %d", row.from_bonus)
-      cell.note = "done ✓"
+      cell.target_plain = string.format("bonus %d", row.from_bonus)
+      cell.done = true
     else
       local is_level = row.goal_type == "level"
-      cell.target = string.format("%s %d → %d",
-        is_level and "level" or "bonus",
-        is_level and row.from_level or row.from_bonus,
-        is_level and row.target_level or row.target_bonus)
+      cell.metric = is_level and "level" or "bonus"
+      cell.from   = is_level and row.from_level or row.from_bonus
+      cell.to     = is_level and row.target_level or row.target_bonus
+      cell.target_plain = string.format("%s %d → %d", cell.metric, cell.from, cell.to)
       cell.optimal = "~" .. format_xp_short(row.cheapest_xp) .. " xp"
       cell.self    = "self ~" .. format_xp_short(row.self_xp) .. " xp"
     end
     if #cell.skill > w_skill then w_skill = #cell.skill end
-    if cell.target and #cell.target > w_target then w_target = #cell.target end
+    if cell.target_plain and #cell.target_plain > w_target then
+      w_target = #cell.target_plain
+    end
     rows[#rows + 1] = cell
   end
 
-  mud.note(string.format("goals: %s — %d goal%s · %s xp (optimal) / %s xp (self)",
-    charname, #result.goals, #result.goals == 1 and "" or "s",
-    format_xp_short(result.total_optimal), format_xp_short(result.total_self)))
+  mud.note(
+    sp("goals: ", GP.label),
+    sp(charname, GP.char),
+    sp(string.format(" — %d goal%s · ", #result.goals, #result.goals == 1 and "" or "s")),
+    sp(format_xp_short(result.total_optimal) .. " xp", GP.optimal),
+    sp(" (optimal) / "),
+    sp(format_xp_short(result.total_self) .. " xp", GP.selfc),
+    sp(" (self)"))
 
   for _, cell in ipairs(rows) do
     local skill_pad = string.format("  %-" .. w_skill .. "s  ", cell.skill)
+    local out = { sp(skill_pad, GP.skill) }
     if cell.optimal then
-      local lead = skill_pad ..
-        string.format("%-" .. w_target .. "s  %s (%s)  ",
-          cell.target, cell.optimal, cell.self)
-      mud.note(lead, mud.span("show details", {
-        underline = true,
-        on_click  = function() print_goal_detail(cell.row) end,
-      }))
+      local pad = string.rep(" ", w_target - #cell.target_plain)
+      out[#out + 1] = sp(string.format("%s %d → ", cell.metric, cell.from))
+      out[#out + 1] = sp(tostring(cell.to), GP.target)
+      out[#out + 1] = sp(pad .. "  ")
+      out[#out + 1] = sp(cell.optimal, GP.optimal)
+      out[#out + 1] = sp(" (")
+      out[#out + 1] = sp(cell.self, GP.selfc)
+      out[#out + 1] = sp(")  ")
+      out[#out + 1] = sp("show details", {
+        fg = "cyan", underline = true,
+        on_click = function() print_goal_detail(cell.row) end,
+      })
+    elseif cell.done then
+      out[#out + 1] = sp(cell.target_plain .. "  ")
+      out[#out + 1] = sp("done ✓", GP.done)
     else
-      mud.note(skill_pad .. (cell.target and (cell.target .. "  ") or "") ..
-        (cell.note or ""))
+      out[#out + 1] = sp(cell.note or "", GP.warn)
     end
+    mud.note(table.unpack(out))
   end
 
   -- Afford-now footer: how far your current XP takes each goal on its own.
@@ -1118,16 +1177,25 @@ local function show_goals(charname)
     local parts = {}
     for _, row in ipairs(result.goals) do
       if row.afford and not row.done and not row.error then
-        parts[#parts + 1] = string.format("%s +%d lvl (+%d bonus)",
-          skill_data.abbreviate(row.skill),
-          row.afford.level - row.from_level,
-          row.afford.bonus - row.from_bonus)
+        parts[#parts + 1] = {
+          abbr  = skill_data.abbreviate(row.skill),
+          delta = string.format("+%d lvl (+%d bonus)",
+            row.afford.level - row.from_level, row.afford.bonus - row.from_bonus),
+        }
       end
     end
     if #parts > 0 then
       mud.note("")
-      mud.note(string.format("  afford now (%s xp, each): %s",
-        format_xp_short(inputs.current_xp), table.concat(parts, " · ")))
+      local out = {
+        sp("  afford now ", GP.label),
+        sp(string.format("(%s xp, each): ", format_xp_short(inputs.current_xp))),
+      }
+      for i, p in ipairs(parts) do
+        if i > 1 then out[#out + 1] = sp(" · ") end
+        out[#out + 1] = sp(p.abbr, GP.skill)
+        out[#out + 1] = sp(" " .. p.delta, GP.afford)
+      end
+      mud.note(table.unpack(out))
     end
   end
 end
@@ -1135,7 +1203,7 @@ end
 mud.command("goal", function(m)
   local charname = goal_charname()
   if not charname or charname == "" then
-    mud.note("goal: no character yet — log in first.")
+    mud.note(sp("goal: no character yet — log in first.", GP.err))
     return
   end
   local args = (m and m.args) or ""
@@ -1145,12 +1213,12 @@ mud.command("goal", function(m)
   elseif verb == "rm" or verb == "remove" or verb == "del" then goal_rm(charname, rest)
   elseif verb == "clear" then
     save_goals(charname, {})
-    mud.note("goals: cleared.")
+    mud.note(sp("goals: cleared.", GP.warn))
   elseif verb == "help" or verb == "?" then goal_help()
   elseif verb == "" or verb == "list" then show_goals(charname)
   else
-    mud.note("goal: unknown subcommand '" .. verb ..
-      "'. Try /goal help.")
+    mud.note(sp("goal: unknown subcommand '" .. verb .. "'. Try ", GP.err),
+      sp("/goal help", GP.cmd))
   end
 end, {
   description = "Manage skill goals (a target level or bonus per skill).",
@@ -1163,7 +1231,7 @@ mud.command("goals", function(m)
   if arg == "help" or arg == "?" then goal_help() return end
   local charname = goal_charname()
   if not charname or charname == "" then
-    mud.note("goals: no character yet — log in first.")
+    mud.note(sp("goals: no character yet — log in first.", GP.err))
     return
   end
   show_goals(charname)
@@ -1192,7 +1260,10 @@ events.on("net.mallard.discworld.skills.updated", function(d)
     local g = list[i]   -- planner.plan preserves goal order
     if row.done and not g.announced then
       g.announced, changed = true, true
-      mud.note(string.format("goal met: %s → %d %s ✓", g.skill, g.value, g.type))
+      mud.note(
+        sp("goal met: ", GP.done),
+        sp(g.skill, { fg = "cyan", bold = true }),
+        sp(string.format(" → %d %s ✓", g.value, g.type), GP.done))
     elseif not row.done and g.announced then
       g.announced, changed = nil, true
     end
