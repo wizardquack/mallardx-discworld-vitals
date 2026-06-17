@@ -1157,7 +1157,9 @@ end, {
     "goal clear | goal list",
 })
 
-mud.command("goals", function()
+mud.command("goals", function(m)
+  local arg = ((m and m.args) or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower()
+  if arg == "help" or arg == "?" then goal_help() return end
   local charname = goal_charname()
   if not charname or charname == "" then
     mud.note("goals: no character yet — log in first.")
