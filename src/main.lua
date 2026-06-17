@@ -12,6 +12,8 @@ local xp_tracker    = require("xp_tracker")
 local gp_tracker    = require("gp_tracker")
 local skills_parser = require("skills_parser")
 local stats_parser  = require("stats_parser")
+local planner       = require("planner")
+local skill_data    = require("skill_data")
 
 local panel = mud.panel("vitals")
 
@@ -880,6 +882,319 @@ events.on("net.mallard.discworld.stats.request", function(d)
     snapshot = snapshot,
     replay   = true,
   })
+end)
+
+-- ---------------------------------------------------------------------
+-- Skill goal planning — /goal manages per-character goals (a target level
+-- or bonus per skill) and /goals shows the cheapest XP path to each with a
+-- self-teach comparison. All the math lives in src/{bonus,cost,forecast,
+-- planner}.lua; this section is just storage, command parsing, and note
+-- formatting. Goals persist under `goals/<charname>` and recompute live off
+-- the same `skills.updated` event the parser emits.
+-- ---------------------------------------------------------------------
+
+-- Compact XP magnitudes for the summary line: 17.2M, 210M, 1.3B, 845k.
+local function format_xp_short(n)
+  if type(n) ~= "number" then return tostring(n) end
+  local function trim(x) return (string.format("%.1f", x):gsub("%.0$", "")) end
+  local abs = math.abs(n)
+  if abs >= 1e9 then return trim(n / 1e9) .. "B" end
+  if abs >= 1e6 then return trim(n / 1e6) .. "M" end
+  if abs >= 1e3 then return trim(n / 1e3) .. "k" end
+  return format_thousands(n)
+end
+
+local function goals_storage_key(charname) return "goals/" .. charname end
+
+local function load_goals(charname)
+  local rec = storage.get(goals_storage_key(charname))
+  if type(rec) == "table" and type(rec.goals) == "table" then return rec.goals end
+  return {}
+end
+
+local function save_goals(charname, list)
+  storage.set(goals_storage_key(charname), { goals = list })
+end
+
+-- The active character for goal commands. char.info.name is authoritative;
+-- _last_active (set by the skills/stats flush) covers a mid-session reload
+-- before char.info has re-arrived.
+local function goal_charname()
+  local n = gmcp.get("char.info.name")
+  if type(n) == "string" and n ~= "" then return n end
+  return storage.get("skills/_last_active")
+end
+
+-- Union of every skill in the stat table and every skill the character
+-- actually has — so goals can target not-yet-trained skills too.
+local function known_skill_paths(charname)
+  local set = {}
+  for path in pairs(skill_data.STAT_CODES) do set[path] = true end
+  local snap = charname and storage.get("skills/" .. charname)
+  if type(snap) == "table" and type(snap.level) == "table" then
+    for path in pairs(snap.level) do set[path] = true end
+  end
+  local paths = {}
+  for path in pairs(set) do paths[#paths + 1] = path end
+  return paths
+end
+
+local function char_stats(charname)
+  local s = storage.get("stats/" .. charname)
+  return (type(s) == "table") and s.stats or nil
+end
+
+-- Assemble the inputs planner.plan needs from stored per-character state.
+local function plan_inputs(charname)
+  local skills = storage.get("skills/" .. charname)
+  return {
+    skills     = (type(skills) == "table") and skills or {},
+    stats      = char_stats(charname),
+    goals      = load_goals(charname),
+    current_xp = last_xp,
+  }
+end
+
+-- Resolve a user-typed skill query, printing a helpful message and returning
+-- nil if it can't be pinned to exactly one skill.
+local function resolve_goal_skill(charname, query)
+  local path, candidates = planner.resolve_skill(query, known_skill_paths(charname))
+  if path then return path end
+  if #candidates == 0 then
+    mud.note("goal: no skill matches '" .. query .. "'.")
+  else
+    mud.note("goal: '" .. query .. "' is ambiguous — did you mean:")
+    for _, c in ipairs(candidates) do mud.note("  " .. c) end
+  end
+  return nil
+end
+
+local function goal_add(charname, rest)
+  local skill_q, kind, value_s = rest:match("^(%S+)%s+(%S+)%s+(%S+)$")
+  if not skill_q then
+    mud.note("goal: usage — /goal add <skill> <level|bonus> <value>")
+    return
+  end
+  kind = kind:lower()
+  if kind ~= "level" and kind ~= "bonus" then
+    mud.note("goal: type must be 'level' or 'bonus' (got '" .. kind .. "').")
+    return
+  end
+  local value = to_num(value_s)
+  if not value or value <= 0 then
+    mud.note("goal: value must be a positive number (got '" .. value_s .. "').")
+    return
+  end
+  value = math.floor(value)
+  local path = resolve_goal_skill(charname, skill_q)
+  if not path then return end
+
+  local list = load_goals(charname)
+  local replaced = false
+  for _, g in ipairs(list) do
+    if g.skill == path then
+      g.type, g.value, g.announced = kind, value, nil
+      replaced = true
+      break
+    end
+  end
+  if not replaced then
+    list[#list + 1] = { skill = path, type = kind, value = value }
+  end
+  save_goals(charname, list)
+  mud.note(string.format("goal %s: %s %s %d",
+    replaced and "updated" or "added", path, kind, value))
+end
+
+local function goal_rm(charname, rest)
+  local skill_q = rest:match("^(%S+)")
+  if not skill_q then mud.note("goal: usage — /goal rm <skill>") return end
+  local path = resolve_goal_skill(charname, skill_q)
+  if not path then return end
+  local list = load_goals(charname)
+  local kept, found = {}, false
+  for _, g in ipairs(list) do
+    if g.skill == path then found = true else kept[#kept + 1] = g end
+  end
+  if not found then mud.note("goal: no goal set for " .. path .. ".") return end
+  save_goals(charname, kept)
+  mud.note("goal removed: " .. path)
+end
+
+local function goal_help()
+  mud.note("goal — manage skill goals (a target level or bonus per skill):")
+  mud.note("  /goal add <skill> <level|bonus> <value>   add or update a goal")
+  mud.note("  /goal rm <skill>                          remove a goal")
+  mud.note("  /goal clear                               remove all goals")
+  mud.note("  /goal list   (or /goals)                  show progress + XP cost")
+  mud.note("  /goal help                                show this help")
+  mud.note("  skills accept abbreviations: ma.sp.of → magic.spells.offensive")
+  mud.note("  examples:  /goal add fi.me.sw bonus 550   ·   /goal add ma.sp.of level 200")
+end
+
+-- Per-goal drill-down, fired by the clickable `details` span. Lays the
+-- scenarios out as separate labelled figures so a future "specific teacher"
+-- row drops in between optimal and self without reshaping anything.
+local function print_goal_detail(row)
+  local span = (row.target_level and row.from_level)
+    and (row.target_level - row.from_level) or nil
+  mud.note(string.format("%s: bonus %d → %d  (level %d → %d%s)",
+    row.skill, row.from_bonus, row.target_bonus or row.from_bonus,
+    row.from_level, row.target_level or row.from_level,
+    span and string.format(", +%d levels", span) or ""))
+  for _, sc in ipairs(row.scenarios or {}) do
+    local cost_str = sc.reachable and (format_thousands(sc.total_xp) .. " xp") or "n/a"
+    mud.note(string.format("  %-15s : %s", sc.label, cost_str))
+  end
+  if row.afford then
+    mud.note(string.format("  %-15s : +%d levels (+%d bonus) for %s xp",
+      "afford now", row.afford.level - row.from_level,
+      row.afford.bonus - row.from_bonus, format_thousands(row.afford.spent)))
+  end
+end
+
+local function show_goals(charname)
+  local inputs = plan_inputs(charname)
+  if #inputs.goals == 0 then
+    mud.note("goals: none set. Add one with " ..
+      "/goal add <skill> <level|bonus> <value>.")
+    return
+  end
+  if type(storage.get("skills/" .. charname)) ~= "table" then
+    mud.note("goals: no skills snapshot yet — run /skills-refresh for " ..
+      "accurate costs (showing from level 0 until then).")
+  end
+
+  local result = planner.plan(inputs)
+
+  -- Precompute display cells + column widths for a tidy left-aligned table.
+  local rows = {}
+  local w_skill, w_target = 0, 0
+  for _, row in ipairs(result.goals) do
+    local cell = { row = row, skill = row.skill }
+    if row.error == "no_mult" then
+      cell.note = "(needs stats — run /stats-refresh)"
+    elseif row.error then
+      cell.note = "(error: " .. row.error .. ")"
+    elseif row.done then
+      cell.target = string.format("bonus %d", row.from_bonus)
+      cell.note = "done ✓"
+    else
+      local is_level = row.goal_type == "level"
+      cell.target = string.format("%s %d → %d",
+        is_level and "level" or "bonus",
+        is_level and row.from_level or row.from_bonus,
+        is_level and row.target_level or row.target_bonus)
+      cell.optimal = "~" .. format_xp_short(row.cheapest_xp) .. " xp"
+      cell.self    = "self ~" .. format_xp_short(row.self_xp) .. " xp"
+    end
+    if #cell.skill > w_skill then w_skill = #cell.skill end
+    if cell.target and #cell.target > w_target then w_target = #cell.target end
+    rows[#rows + 1] = cell
+  end
+
+  mud.note(string.format("goals: %s — %d goal%s · %s xp (optimal) / %s xp (self)",
+    charname, #result.goals, #result.goals == 1 and "" or "s",
+    format_xp_short(result.total_optimal), format_xp_short(result.total_self)))
+
+  for _, cell in ipairs(rows) do
+    local skill_pad = string.format("  %-" .. w_skill .. "s  ", cell.skill)
+    if cell.optimal then
+      local lead = skill_pad ..
+        string.format("%-" .. w_target .. "s  %s (%s)  ",
+          cell.target, cell.optimal, cell.self)
+      mud.note(lead, mud.span("details", {
+        underline = true,
+        on_click  = function() print_goal_detail(cell.row) end,
+      }))
+    else
+      mud.note(skill_pad .. (cell.target and (cell.target .. "  ") or "") ..
+        (cell.note or ""))
+    end
+  end
+
+  -- Afford-now footer: how far your current XP takes each goal on its own.
+  if inputs.current_xp then
+    local parts = {}
+    for _, row in ipairs(result.goals) do
+      if row.afford and not row.done and not row.error then
+        parts[#parts + 1] = string.format("%s +%d lvl (+%d bonus)",
+          row.skill:match("[^.]+$"),
+          row.afford.level - row.from_level,
+          row.afford.bonus - row.from_bonus)
+      end
+    end
+    if #parts > 0 then
+      mud.note(string.format("  afford now (%s xp, each): %s",
+        format_xp_short(inputs.current_xp), table.concat(parts, " · ")))
+    end
+  end
+end
+
+mud.command("goal", function(m)
+  local charname = goal_charname()
+  if not charname or charname == "" then
+    mud.note("goal: no character yet — log in first.")
+    return
+  end
+  local args = (m and m.args) or ""
+  local verb, rest = args:match("^(%S*)%s*(.*)$")
+  verb = (verb or ""):lower()
+  if verb == "add" then goal_add(charname, rest)
+  elseif verb == "rm" or verb == "remove" or verb == "del" then goal_rm(charname, rest)
+  elseif verb == "clear" then
+    save_goals(charname, {})
+    mud.note("goals: cleared.")
+  elseif verb == "help" or verb == "?" then goal_help()
+  elseif verb == "" or verb == "list" then show_goals(charname)
+  else
+    mud.note("goal: unknown subcommand '" .. verb ..
+      "'. Try /goal help.")
+  end
+end, {
+  description = "Manage skill goals (a target level or bonus per skill).",
+  usage = "goal add <skill> <level|bonus> <value> | goal rm <skill> | " ..
+    "goal clear | goal list",
+})
+
+mud.command("goals", function()
+  local charname = goal_charname()
+  if not charname or charname == "" then
+    mud.note("goals: no character yet — log in first.")
+    return
+  end
+  show_goals(charname)
+end, {
+  description = "Show cheapest XP cost and progress toward your skill goals.",
+  usage = "goals",
+})
+
+-- Announce a goal the moment a skills refresh shows it newly met. We mark the
+-- goal `announced` so it only fires once, and clear the flag if it later
+-- falls back below target (e.g. the goal was raised), so re-completion
+-- announces again. Replays (cached re-emits) are ignored.
+events.on("net.mallard.discworld.skills.updated", function(d)
+  if type(d) ~= "table" or d.replay then return end
+  local charname = d.charname
+  if not charname or charname == "" then return end
+  local list = load_goals(charname)
+  if #list == 0 then return end
+  local result = planner.plan({
+    skills = (type(d.snapshot) == "table") and d.snapshot or {},
+    stats  = char_stats(charname),
+    goals  = list,
+  })
+  local changed = false
+  for i, row in ipairs(result.goals) do
+    local g = list[i]   -- planner.plan preserves goal order
+    if row.done and not g.announced then
+      g.announced, changed = true, true
+      mud.note(string.format("goal met: %s → %d %s ✓", g.skill, g.value, g.type))
+    elseif not row.done and g.announced then
+      g.announced, changed = nil, true
+    end
+  end
+  if changed then save_goals(charname, list) end
 end)
 
 -- ---------------------------------------------------------------------
