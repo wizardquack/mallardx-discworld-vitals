@@ -110,4 +110,34 @@ test("multiplicator_for matches stat_multiplicator of expanded values", function
   eq(m, direct, "consistent with bonus.stat_multiplicator")
 end)
 
+-- ---------------------------------------------------------------------
+-- abbreviate — brief, two-letter-floor, collision-free across the tree.
+-- ---------------------------------------------------------------------
+test("abbreviate produces the expected brief forms", function()
+  eq(skill_data.abbreviate("magic.spells.defensive"), "ma.sp.de", "ma.sp.de")
+  eq(skill_data.abbreviate("people.teaching.magic"), "pe.te.ma", "pe.te.ma")
+  -- Siblings that clash at 2 letters extend just enough to disambiguate.
+  eq(skill_data.abbreviate("magic.methods.mental.channeling"), "ma.me.me.chan", "channeling")
+  eq(skill_data.abbreviate("magic.methods.mental.charming"), "ma.me.me.char", "charming")
+  eq(skill_data.abbreviate("crafts.hunting"), "cr.hun", "hunting")
+  eq(skill_data.abbreviate("crafts.husbandry"), "cr.hus", "husbandry")
+end)
+
+test("abbreviate floors at two letters per node", function()
+  eq(skill_data.abbreviate("adventuring"), "ad", "root floor")
+  for node in skill_data.abbreviate("magic.spells.defensive"):gmatch("[^.]+") do
+    assert(#node >= 2, "every node >= 2 chars")
+  end
+end)
+
+test("abbreviate is collision-free across all 251 skills", function()
+  local seen = {}
+  for path in pairs(skill_data.STAT_CODES) do
+    local a = skill_data.abbreviate(path)
+    assert(not seen[a],
+      "collision: " .. tostring(seen[a]) .. " vs " .. path .. " -> " .. a)
+    seen[a] = path
+  end
+end)
+
 print(string.format("\n%d skill_data tests passed.", passed))

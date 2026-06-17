@@ -1119,7 +1119,7 @@ local function show_goals(charname)
     for _, row in ipairs(result.goals) do
       if row.afford and not row.done and not row.error then
         parts[#parts + 1] = string.format("%s +%d lvl (+%d bonus)",
-          row.skill:match("[^.]+$"),
+          skill_data.abbreviate(row.skill),
           row.afford.level - row.from_level,
           row.afford.bonus - row.from_bonus)
       end

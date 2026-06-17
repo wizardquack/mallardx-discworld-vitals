@@ -319,6 +319,57 @@ function M.stat_values_for(path, stats)
   return values
 end
 
+-- Sibling map for abbreviate(), built lazily from STAT_CODES:
+--   _children[parent path] = { [child segment] = true }
+-- ("" is the parent of the seven roots.)
+local _children
+
+local function build_children()
+  _children = {}
+  for path in pairs(M.STAT_CODES) do
+    local prefix = ""
+    for seg in path:gmatch("[^.]+") do
+      local bucket = _children[prefix]
+      if not bucket then bucket = {}; _children[prefix] = bucket end
+      bucket[seg] = true
+      prefix = (prefix == "") and seg or (prefix .. "." .. seg)
+    end
+  end
+end
+
+-- Shortest prefix of `name` (at least `floor` chars) that no other sibling
+-- shares — i.e. the briefest unambiguous abbreviation of this node.
+local function min_unique_prefix(name, siblings, floor)
+  local len = math.min(math.max(floor, 1), #name)
+  while len < #name do
+    local pre, clash = name:sub(1, len), false
+    for s in pairs(siblings) do
+      if s ~= name and s:sub(1, len) == pre then clash = true; break end
+    end
+    if not clash then break end
+    len = len + 1
+  end
+  return name:sub(1, len)
+end
+
+-- Abbreviate a dotted skill path to its briefest still-unambiguous form,
+-- using two letters per node and extending only the nodes whose two-letter
+-- prefix collides with a sibling — e.g. magic.spells.defensive → "ma.sp.de",
+-- magic.methods.mental.channeling → "ma.me.me.chan". The result is globally
+-- unique across the skill tree and resolves back via planner.resolve_skill.
+-- Unknown branches (not in the tree) fall back to a flat two-letter prefix.
+function M.abbreviate(path)
+  if type(path) ~= "string" then return path end
+  if not _children then build_children() end
+  local out, prefix = {}, ""
+  for seg in path:gmatch("[^.]+") do
+    local siblings = _children[prefix]
+    out[#out + 1] = siblings and min_unique_prefix(seg, siblings, 2) or seg:sub(1, 2)
+    prefix = (prefix == "") and seg or (prefix .. "." .. seg)
+  end
+  return table.concat(out, ".")
+end
+
 -- Compute the multiplicator M for a skill from a stats table, via the
 -- stat-based formula in src/bonus.lua. Returns nil if the path is unknown,
 -- stats are missing, or M is undefined. This is the "from stats" counterpart
