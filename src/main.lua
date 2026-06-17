@@ -645,6 +645,10 @@ local skills_sm = skills_parser.make({
       return
     end
     local prev = storage.get("skills/" .. charname)
+    -- Stamp the fetch time so /goals can show how stale the data is. Extra
+    -- field is inert to diff_skills (it walks .level/.bonus) and to consumers
+    -- of the emitted event.
+    snapshot.saved_at = now_seconds()
     storage.set("skills/" .. charname, snapshot)
     storage.set("skills/_last_active", charname)
     events.emit("net.mallard.discworld.skills.updated", {
@@ -810,6 +814,8 @@ local stats_sm = stats_parser.make({
       return
     end
     local prev = storage.get("stats/" .. charname)
+    -- Stamp the fetch time (see skills on_flush) so /goals can show staleness.
+    snapshot.saved_at = now_seconds()
     storage.set("stats/" .. charname, snapshot)
     storage.set("stats/_last_active", charname)
     events.emit("net.mallard.discworld.stats.updated", {
@@ -977,6 +983,11 @@ local GP = {
 
 local function sp(text, style) return mud.span(text, style) end
 
+-- Active command prefix (the user's `command_prefix` setting, default "/").
+-- Read fresh per call so help/hint text reflects a live remap; every command
+-- literal we print to the user goes through this rather than a hardcoded "/".
+local function pfx() return mud.command_prefix() end
+
 -- Display width of a UTF-8 string (counts non-continuation bytes), so a
 -- divider sized to a row isn't thrown off by multi-byte glyphs like → / ✓.
 -- Every glyph we emit is single-column, so a codepoint count is exact here.
@@ -1060,19 +1071,21 @@ local function goal_rm(charname, rest)
 end
 
 local function goal_help()
+  local p = pfx()
   local function line(cmd, desc)
     mud.note(sp(string.format("  %-40s", cmd), GP.cmd), sp(desc))
   end
   mud.note(sp("goal — manage skill goals (a target level or bonus per skill):", GP.label))
-  line("/goal add <skill> <level|bonus> <value>", "add or update a goal")
-  line("/goal rm <skill>",                        "remove a goal")
-  line("/goal clear",                             "remove all goals")
-  line("/goal list   (or /goals)",                "show progress + XP cost")
-  line("/goal help",                              "show this help")
+  line(p .. "goal add <skill> <level|bonus> <value>",  "add or update a goal")
+  line(p .. "goal rm <skill>",                         "remove a goal")
+  line(p .. "goal clear",                              "remove all goals")
+  line(p .. "goal list   (or " .. p .. "goals)",       "show progress + XP cost")
+  line(p .. "goals refresh",                           "re-fetch skills + stats from the MUD")
+  line(p .. "goal help",                               "show this help")
   mud.note(sp("  skills accept abbreviations: "), sp("ma.sp.of", GP.skill),
     sp(" → "), sp("magic.spells.offensive", GP.skill))
-  mud.note(sp("  examples:  "), sp("/goal add fi.me.sw bonus 550", GP.cmd),
-    sp("   ·   "), sp("/goal add ma.sp.of level 200", GP.cmd))
+  mud.note(sp("  examples:  "), sp(p .. "goal add fi.me.sw bonus 550", GP.cmd),
+    sp("   ·   "), sp(p .. "goal add ma.sp.of level 200", GP.cmd))
 end
 
 -- Per-goal drill-down, fired by the clickable `show details` span. Lays the
@@ -1105,16 +1118,32 @@ local function print_goal_detail(row)
   end
 end
 
+-- Combined skills+stats refetch — the one documented "freshen my data" action,
+-- surfaced as `/goal refresh` and `/goals refresh` so the planner has a single
+-- entry point and users never have to remember the two underlying *-refresh
+-- aliases. Arms both parsers and fires both queries; each parser prints its own
+-- completion note (and the live skills.updated handler re-announces newly met
+-- goals), so nothing extra is echoed here beyond the kickoff line. Defined
+-- above show_goals so the clickable freshness-line span can close over it.
+local function refresh_progress()
+  local now = now_seconds()
+  skills_sm.arm(now)
+  stats_sm.arm(now)
+  mud.note(sp("goals: refreshing skills + stats...", GP.label))
+  mud.send("skills raw",  { silent = true })
+  mud.send("score stats", { silent = true })
+end
+
 local function show_goals(charname)
   local inputs = plan_inputs(charname)
   if #inputs.goals == 0 then
     mud.note(sp("goals: none set. Add one with ", GP.warn),
-      sp("/goal add <skill> <level|bonus> <value>", GP.cmd))
+      sp(pfx() .. "goal add <skill> <level|bonus> <value>", GP.cmd))
     return
   end
   if type(storage.get("skills/" .. charname)) ~= "table" then
     mud.note(sp("goals: no skills snapshot yet — run ", GP.warn),
-      sp("/skills-refresh", GP.cmd),
+      sp(pfx() .. "goals refresh", GP.cmd),
       sp(" for accurate costs (showing from level 0 until then).", GP.warn))
   end
 
@@ -1129,7 +1158,7 @@ local function show_goals(charname)
   for _, row in ipairs(result.goals) do
     local cell = { row = row, skill = row.skill }
     if row.error == "no_mult" then
-      cell.note = "(needs stats — run /stats-refresh)"
+      cell.note = "(needs stats — run /goals refresh)"
     elseif row.error then
       cell.note = "(error: " .. row.error .. ")"
     elseif row.done then
@@ -1160,6 +1189,31 @@ local function show_goals(charname)
     sp(" (optimal) / "),
     sp(format_xp_short(result.total_self) .. " xp", GP.selfc),
     sp(" (self)"))
+
+  -- Freshness line: how long ago skills/stats were last pulled off the wire,
+  -- with the one-stop command to update them. Ages read the saved_at stamp the
+  -- parsers write at flush. "never" (no snapshot) is highlighted; a snapshot
+  -- saved before this stamp existed shows "time unknown".
+  local function age_label(snap)
+    if type(snap) ~= "table" then return "never", true end
+    if type(snap.saved_at) ~= "number" then return "time unknown", false end
+    return format_duration(now_seconds() - snap.saved_at) .. " ago", false
+  end
+  local sk_age, sk_never = age_label(storage.get("skills/" .. charname))
+  local st_age, st_never = age_label(storage.get("stats/" .. charname))
+  local muted = { fg = "light black" }
+  -- The hint is a clickable span that runs the refresh directly, so the user
+  -- never has to type it. The label uses the live command prefix (the user may
+  -- have remapped it off "/") purely for display — the click bypasses parsing.
+  mud.note(
+    sp("  skills ", muted), sp(sk_age, sk_never and GP.warn or muted),
+    sp("  ·  stats ", muted), sp(st_age, st_never and GP.warn or muted),
+    sp("  ·  ", muted),
+    sp(pfx() .. "goals refresh", {
+      fg = "light cyan", bold = true, underline = true,
+      on_click = function() refresh_progress() end,
+    }),
+    sp(" to update", muted))
 
   -- Build + emit each row, tracking the widest rendered line so the
   -- afford-now divider below can match the table width.
@@ -1238,6 +1292,7 @@ mud.command("goal", function(m)
   local verb, rest = args:match("^(%S*)%s*(.*)$")
   verb = (verb or ""):lower()
   if verb == "add" then goal_add(charname, rest)
+  elseif verb == "refresh" then refresh_progress()
   elseif verb == "rm" or verb == "remove" or verb == "del" then goal_rm(charname, rest)
   elseif verb == "clear" then
     save_goals(charname, {})
@@ -1246,12 +1301,12 @@ mud.command("goal", function(m)
   elseif verb == "" or verb == "list" then show_goals(charname)
   else
     mud.note(sp("goal: unknown subcommand '" .. verb .. "'. Try ", GP.err),
-      sp("/goal help", GP.cmd))
+      sp(pfx() .. "goal help", GP.cmd))
   end
 end, {
   description = "Manage skill goals (a target level or bonus per skill).",
   usage = "goal add <skill> <level|bonus> <value> | goal rm <skill> | " ..
-    "goal clear | goal list",
+    "goal clear | goal list | goal refresh",
 })
 
 mud.command("goals", function(m)
@@ -1262,10 +1317,11 @@ mud.command("goals", function(m)
     mud.note(sp("goals: no character yet — log in first.", GP.err))
     return
   end
+  if arg == "refresh" then refresh_progress() return end
   show_goals(charname)
 end, {
   description = "Show cheapest XP cost and progress toward your skill goals.",
-  usage = "goals",
+  usage = "goals | goals refresh",
 })
 
 -- Announce a goal the moment a skills refresh shows it newly met. We mark the

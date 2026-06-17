@@ -6,6 +6,9 @@ Vitals panel for Discworld MUD, with:
 - XP, XP/hr, and XP/hr over time chart
 - realtime shielding indicators (EFF / CCC / BUG / MS / TPA)
 
+Additionally this plugin provides skill-, stat-, and xp-aware goal
+tracking for your characters. Enter /goals to get started.
+
 ## A note on cross-plugin events
 
 This plugin has an optional dependency on
