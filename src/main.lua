@@ -977,6 +977,18 @@ local GP = {
 
 local function sp(text, style) return mud.span(text, style) end
 
+-- Display width of a UTF-8 string (counts non-continuation bytes), so a
+-- divider sized to a row isn't thrown off by multi-byte glyphs like → / ✓.
+-- Every glyph we emit is single-column, so a codepoint count is exact here.
+local function disp_width(s)
+  local n = 0
+  for i = 1, #s do
+    local b = s:byte(i)
+    if b < 0x80 or b >= 0xC0 then n = n + 1 end
+  end
+  return n
+end
+
 -- Resolve a user-typed skill query, printing a helpful message and returning
 -- nil if it can't be pinned to exactly one skill.
 local function resolve_goal_skill(charname, query)
@@ -1147,32 +1159,38 @@ local function show_goals(charname)
     sp(format_xp_short(result.total_self) .. " xp", GP.selfc),
     sp(" (self)"))
 
+  -- Build + emit each row, tracking the widest rendered line so the
+  -- afford-now divider below can match the table width.
+  local w_line = 0
   for _, cell in ipairs(rows) do
     local skill_pad = string.format("  %-" .. w_skill .. "s  ", cell.skill)
-    local out = { sp(skill_pad, GP.skill) }
+    local out, plain = { sp(skill_pad, GP.skill) }, skill_pad
+    local function add(text, style) out[#out + 1] = sp(text, style); plain = plain .. text end
     if cell.optimal then
       local pad = string.rep(" ", w_target - #cell.target_plain)
-      out[#out + 1] = sp(string.format("%s %d → ", cell.metric, cell.from))
-      out[#out + 1] = sp(tostring(cell.to), GP.target)
-      out[#out + 1] = sp(pad .. "  ")
-      out[#out + 1] = sp(cell.optimal, GP.optimal)
-      out[#out + 1] = sp(" (")
-      out[#out + 1] = sp(cell.self, GP.selfc)
-      out[#out + 1] = sp(")  ")
-      out[#out + 1] = sp("show details", {
+      add(string.format("%s %d → ", cell.metric, cell.from))
+      add(tostring(cell.to), GP.target)
+      add(pad .. "  ")
+      add(cell.optimal, GP.optimal)
+      add(" (")
+      add(cell.self, GP.selfc)
+      add(")  ")
+      add("show details", {
         fg = "cyan", underline = true,
         on_click = function() print_goal_detail(cell.row) end,
       })
     elseif cell.done then
-      out[#out + 1] = sp(cell.target_plain .. "  ")
-      out[#out + 1] = sp("done ✓", GP.done)
+      add(cell.target_plain .. "  ")
+      add("done ✓", GP.done)
     else
-      out[#out + 1] = sp(cell.note or "", GP.warn)
+      add(cell.note or "", GP.warn)
     end
+    w_line = math.max(w_line, disp_width(plain))
     mud.note(table.unpack(out))
   end
 
-  -- Afford-now footer: how far your current XP takes each goal on its own.
+  -- Afford-now footer: how far your current XP takes each goal on its own,
+  -- set off from the rows by a divider sized to the table.
   if inputs.current_xp then
     local parts = {}
     for _, row in ipairs(result.goals) do
@@ -1185,7 +1203,8 @@ local function show_goals(charname)
       end
     end
     if #parts > 0 then
-      mud.note("")
+      mud.note(sp("  " .. string.rep("─", math.max(w_line - 2, 1)),
+        { fg = "light black" }))
       local out = {
         sp("  afford now ", GP.label),
         sp(string.format("(%s xp, each): ", format_xp_short(inputs.current_xp))),
