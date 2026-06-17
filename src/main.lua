@@ -1098,7 +1098,7 @@ local function print_goal_detail(row)
   end
   if row.afford then
     mud.note(
-      sp(string.format("  %-15s : ", "afford now"), GP.skill),
+      sp(string.format("  %-15s : ", "afford now"), GP.label),
       sp(string.format("+%d levels (+%d bonus)",
         row.afford.level - row.from_level, row.afford.bonus - row.from_bonus), GP.afford),
       sp(string.format(" for %s xp", format_thousands(row.afford.spent))))
