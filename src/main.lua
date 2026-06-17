@@ -1168,7 +1168,12 @@ local function show_goals(charname)
   for _, cell in ipairs(rows) do
     local skill_pad = string.format("  %-" .. w_skill .. "s  ", cell.skill)
     local out, plain = { sp(skill_pad, GP.skill) }, skill_pad
-    local function add(text, style) out[#out + 1] = sp(text, style); plain = plain .. text end
+    -- mud.span rejects empty text, so skip zero-width padding / empty cells.
+    local function add(text, style)
+      if text == "" then return end
+      out[#out + 1] = sp(text, style)
+      plain = plain .. text
+    end
     if cell.metric then
       add(string.format("%-" .. w_metric .. "s ", cell.metric))
       add(rpad(cell.from, w_from)); add(cell.from)
