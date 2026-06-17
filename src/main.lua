@@ -1103,7 +1103,7 @@ local function show_goals(charname)
       local lead = skill_pad ..
         string.format("%-" .. w_target .. "s  %s (%s)  ",
           cell.target, cell.optimal, cell.self)
-      mud.note(lead, mud.span("details", {
+      mud.note(lead, mud.span("show details", {
         underline = true,
         on_click  = function() print_goal_detail(cell.row) end,
       }))
