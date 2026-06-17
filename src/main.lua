@@ -1125,6 +1125,7 @@ local function show_goals(charname)
       end
     end
     if #parts > 0 then
+      mud.note("")
       mud.note(string.format("  afford now (%s xp, each): %s",
         format_xp_short(inputs.current_xp), table.concat(parts, " · ")))
     end
