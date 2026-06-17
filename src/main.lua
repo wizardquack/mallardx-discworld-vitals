@@ -1120,11 +1120,12 @@ local function show_goals(charname)
 
   local result = planner.plan(inputs)
 
-  -- Precompute display cells + column widths for a tidy left-aligned table.
-  -- Target is kept as (metric, from, to) so the goal value can be emphasised
-  -- while the cell as a whole still pads to a common width.
+  -- Precompute display cells + per-column widths so every column lines up
+  -- regardless of how many digits the levels/bonuses/costs run to. Columns:
+  -- skill (left), metric word, right-aligned from / to, and right-aligned
+  -- optimal / self cost cells.
   local rows = {}
-  local w_skill, w_target = 0, 0
+  local w_skill, w_metric, w_from, w_to, w_opt, w_self = 0, 0, 0, 0, 0, 0
   for _, row in ipairs(result.goals) do
     local cell = { row = row, skill = row.skill }
     if row.error == "no_mult" then
@@ -1132,21 +1133,22 @@ local function show_goals(charname)
     elseif row.error then
       cell.note = "(error: " .. row.error .. ")"
     elseif row.done then
-      cell.target_plain = string.format("bonus %d", row.from_bonus)
       cell.done = true
+      cell.done_text = string.format("bonus %d", row.from_bonus)
     else
       local is_level = row.goal_type == "level"
       cell.metric = is_level and "level" or "bonus"
-      cell.from   = is_level and row.from_level or row.from_bonus
-      cell.to     = is_level and row.target_level or row.target_bonus
-      cell.target_plain = string.format("%s %d → %d", cell.metric, cell.from, cell.to)
-      cell.optimal = "~" .. format_xp_short(row.cheapest_xp) .. " xp"
-      cell.self    = "self ~" .. format_xp_short(row.self_xp) .. " xp"
+      cell.from   = tostring(is_level and row.from_level or row.from_bonus)
+      cell.to     = tostring(is_level and row.target_level or row.target_bonus)
+      cell.opt    = "~" .. format_xp_short(row.cheapest_xp) .. " xp"
+      cell.slf    = "~" .. format_xp_short(row.self_xp) .. " xp"
+      w_metric = math.max(w_metric, #cell.metric)
+      w_from   = math.max(w_from, #cell.from)
+      w_to     = math.max(w_to, #cell.to)
+      w_opt    = math.max(w_opt, #cell.opt)
+      w_self   = math.max(w_self, #cell.slf)
     end
-    if #cell.skill > w_skill then w_skill = #cell.skill end
-    if cell.target_plain and #cell.target_plain > w_target then
-      w_target = #cell.target_plain
-    end
+    w_skill = math.max(w_skill, #cell.skill)
     rows[#rows + 1] = cell
   end
 
@@ -1162,25 +1164,27 @@ local function show_goals(charname)
   -- Build + emit each row, tracking the widest rendered line so the
   -- afford-now divider below can match the table width.
   local w_line = 0
+  local function rpad(s, w) return string.rep(" ", w - #s) end
   for _, cell in ipairs(rows) do
     local skill_pad = string.format("  %-" .. w_skill .. "s  ", cell.skill)
     local out, plain = { sp(skill_pad, GP.skill) }, skill_pad
     local function add(text, style) out[#out + 1] = sp(text, style); plain = plain .. text end
-    if cell.optimal then
-      local pad = string.rep(" ", w_target - #cell.target_plain)
-      add(string.format("%s %d → ", cell.metric, cell.from))
-      add(tostring(cell.to), GP.target)
-      add(pad .. "  ")
-      add(cell.optimal, GP.optimal)
-      add(" (")
-      add(cell.self, GP.selfc)
-      add(")  ")
+    if cell.metric then
+      add(string.format("%-" .. w_metric .. "s ", cell.metric))
+      add(rpad(cell.from, w_from)); add(cell.from)
+      add(" → ")
+      add(rpad(cell.to, w_to)); add(cell.to, GP.target)
+      add("  ")
+      add(rpad(cell.opt, w_opt)); add(cell.opt, GP.optimal)
+      add("  (self ")
+      add(rpad(cell.slf, w_self)); add(cell.slf, GP.selfc); add(")")
+      add("  ")
       add("show details", {
         fg = "cyan", underline = true,
         on_click = function() print_goal_detail(cell.row) end,
       })
     elseif cell.done then
-      add(cell.target_plain .. "  ")
+      add(cell.done_text .. "  ")
       add("done ✓", GP.done)
     else
       add(cell.note or "", GP.warn)
