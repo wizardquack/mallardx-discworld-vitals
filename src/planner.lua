@@ -31,6 +31,44 @@ local function split_dots(s)
   return out
 end
 
+local function clamp01(x)
+  if x < 0 then return 0 elseif x > 1 then return 1 else return x end
+end
+
+-- ---------------------------------------------------------------------
+-- progress_from_baseline — how far a skill has come from a recorded starting
+-- point toward its target, measured two ways:
+--   by levels — a simple (gained / span) ratio, intuitive but uneven since
+--               later levels cost far more XP than early ones;
+--   by XP     — invested / total along the OPTIMAL path start→target, so the
+--               two figures are internally consistent (invested + remaining =
+--               total) and reflect the real, nonlinear effort curve.
+-- The XP measure needs the start→target path to be priceable end-to-end; if a
+-- level along the way has no eligible method (a stalled forecast) the XP
+-- fields are left nil and only the level ratio is reported.
+-- ---------------------------------------------------------------------
+local function progress_from_baseline(mult, start_level, start_bonus,
+                                      from_level, target_level, methods)
+  local p = {
+    start_level   = start_level,
+    start_bonus   = start_bonus,
+    levels_gained = from_level - start_level,
+    levels_span   = target_level - start_level,
+  }
+  p.pct_levels = (p.levels_span > 0)
+    and clamp01(p.levels_gained / p.levels_span) or 1
+
+  local invested = forecast.cost_to_target(mult, start_level, from_level, methods)
+  local total    = forecast.cost_to_target(mult, start_level, target_level, methods)
+  if invested and invested.reachable and total and total.reachable then
+    p.invested_xp = invested.total_xp
+    p.total_xp    = total.total_xp
+    p.pct_xp = (total.total_xp > 0)
+      and clamp01(invested.total_xp / total.total_xp) or 1
+  end
+  return p
+end
+
 -- ---------------------------------------------------------------------
 -- resolve_skill — turn a user-typed skill query into a canonical path,
 -- accepting game-style abbreviations against a list of known paths.
@@ -107,6 +145,11 @@ end
 -- breakdown, the cheapest (headline) figure, and — when current_xp is given —
 -- how far that XP alone would take this skill (the "afford now" view).
 --
+-- When the goal carries a recorded baseline (goal.start_level/start_bonus,
+-- captured at creation), `row.progress` reports how far it has come from that
+-- baseline toward the target (see progress_from_baseline). `start_at` is
+-- passed straight through for presentation.
+--
 -- error is set instead when the skill has no resolvable multiplicator
 -- ("no_mult": zero-level and not in the stat table, or no stats given) or the
 -- goal is malformed ("bad_goal"). `done` marks a goal already met.
@@ -140,6 +183,20 @@ function M.plan_goal(goal, opts)
   row.target_level = target_level
   row.target_bonus = (goal.type == "bonus") and math.floor(goal.value)
                      or bonus.bonus_for_level(target_level, mult)
+
+  -- Progress from the recorded baseline, priced along the optimal path so it
+  -- lines up with the cheapest headline below. Absent for legacy goals whose
+  -- baseline hasn't been captured/backfilled yet. Computed before the done
+  -- early-return so an already-met goal still reports 100%.
+  if type(goal.start_level) == "number" then
+    local start_level = goal.start_level
+    local start_bonus = goal.start_bonus or bonus.bonus_for_level(start_level, mult)
+    local optimal_methods = M.scenarios_for(is_primary)[1].methods
+    row.progress = progress_from_baseline(mult, start_level, start_bonus,
+      from_level, target_level, optimal_methods)
+    row.progress.bonus_gained = from_bonus - start_bonus
+    row.progress.start_at = goal.start_at
+  end
 
   if target_level <= from_level then
     row.done = true

@@ -140,6 +140,60 @@ test("plan_goal afford-now reports reachable level under a budget", function()
 end)
 
 -- ---------------------------------------------------------------------
+-- plan_goal — progress from a recorded baseline.
+-- ---------------------------------------------------------------------
+test("plan_goal reports progress from a baseline", function()
+  local skills = {
+    level = { ["fighting.melee.sword"] = 612 },
+    bonus = { ["fighting.melee.sword"] = 540 },
+  }
+  local row = planner.plan_goal(
+    { skill = "fighting.melee.sword", type = "bonus", value = 550,
+      start_level = 600, start_bonus = 532, start_at = 1000 },
+    { skills = skills })
+  assert(row.progress, "progress present")
+  eq(row.progress.start_level, 600, "start level")
+  eq(row.progress.start_bonus, 532, "start bonus")
+  eq(row.progress.levels_gained, 12, "levels gained (612-600)")
+  eq(row.progress.bonus_gained, 8, "bonus gained (540-532)")
+  eq(row.progress.start_at, 1000, "start_at passed through")
+  -- Span is start→target; we're partway, so strictly between 0 and 1 both ways.
+  assert(row.progress.levels_span > 0, "positive span")
+  assert(row.progress.pct_levels > 0 and row.progress.pct_levels < 1, "level pct partial")
+  assert(row.progress.pct_xp and row.progress.pct_xp > 0 and row.progress.pct_xp < 1,
+    "xp pct partial")
+  -- invested + remaining(optimal) == total along the same optimal path.
+  eq(row.progress.invested_xp + row.cheapest_xp, row.progress.total_xp,
+    "invested + remaining == total")
+end)
+
+test("plan_goal progress is 100% for an already-met goal", function()
+  local skills = {
+    level = { ["fighting.melee.sword"] = 612 },
+    bonus = { ["fighting.melee.sword"] = 540 },
+  }
+  local row = planner.plan_goal(
+    { skill = "fighting.melee.sword", type = "bonus", value = 500,
+      start_level = 580, start_bonus = 520, start_at = 1000 },
+    { skills = skills })
+  eq(row.done, true, "done")
+  assert(row.progress, "progress present even when done")
+  eq(row.progress.pct_levels, 1, "100% by levels")
+  eq(row.progress.pct_xp, 1, "100% by xp")
+end)
+
+test("plan_goal omits progress without a baseline", function()
+  local skills = {
+    level = { ["fighting.melee.sword"] = 612 },
+    bonus = { ["fighting.melee.sword"] = 540 },
+  }
+  local row = planner.plan_goal(
+    { skill = "fighting.melee.sword", type = "bonus", value = 550 },
+    { skills = skills })
+  eq(row.progress, nil, "no progress without baseline")
+end)
+
+-- ---------------------------------------------------------------------
 -- plan — multi-goal totals.
 -- ---------------------------------------------------------------------
 test("plan totals cheapest and self across goals", function()

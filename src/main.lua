@@ -933,6 +933,37 @@ local function save_goals(charname, list)
   storage.set(goals_storage_key(charname), { goals = list })
 end
 
+-- Current observed (level, bonus) for a skill from the cached skills snapshot.
+-- Returns nil,nil when no snapshot exists yet, so a goal added before the first
+-- refresh is left baseline-less for backfill rather than baselined at a bogus 0.
+local function current_skill_state(charname, path)
+  local snap = storage.get("skills/" .. charname)
+  if type(snap) ~= "table" or type(snap.level) ~= "table" then return nil, nil end
+  return snap.level[path] or 0, (snap.bonus and snap.bonus[path]) or 0
+end
+
+-- Fill in any goal baselines not captured at creation time — goals predating
+-- this feature, or added before a skills snapshot existed. The current snapshot
+-- becomes the baseline (progress then tracks from now forward); start_at is
+-- preserved if already stamped, else set to now. Persists only on change and
+-- returns the (possibly updated) goals list.
+local function backfill_goal_baselines(charname)
+  local snap = storage.get("skills/" .. charname)
+  local list = load_goals(charname)
+  if type(snap) ~= "table" or type(snap.level) ~= "table" then return list end
+  local changed = false
+  for _, g in ipairs(list) do
+    if type(g.start_level) ~= "number" then
+      g.start_level = snap.level[g.skill] or 0
+      g.start_bonus = (snap.bonus and snap.bonus[g.skill]) or 0
+      g.start_at    = g.start_at or now_seconds()
+      changed = true
+    end
+  end
+  if changed then save_goals(charname, list) end
+  return list
+end
+
 -- The active character for goal commands. char.info.name is authoritative;
 -- _last_active (set by the skills/stats flush) covers a mid-session reload
 -- before char.info has re-arrived.
@@ -1045,17 +1076,23 @@ local function goal_add(charname, rest)
   local path = resolve_goal_skill(charname, skill_q)
   if not path then return end
 
+  -- Snapshot the starting point so /goal detail can chart progress from here.
+  -- Re-adding a goal restarts tracking (the target — and thus what "progress"
+  -- means — has changed). A nil baseline (no snapshot yet) is backfilled later.
+  local cur_level, cur_bonus = current_skill_state(charname, path)
   local list = load_goals(charname)
   local replaced = false
   for _, g in ipairs(list) do
     if g.skill == path then
       g.type, g.value, g.announced = kind, value, nil
+      g.start_level, g.start_bonus, g.start_at = cur_level, cur_bonus, now_seconds()
       replaced = true
       break
     end
   end
   if not replaced then
-    list[#list + 1] = { skill = path, type = kind, value = value }
+    list[#list + 1] = { skill = path, type = kind, value = value,
+      start_level = cur_level, start_bonus = cur_bonus, start_at = now_seconds() }
   end
   save_goals(charname, list)
   mud.note(
@@ -1099,19 +1136,96 @@ local function goal_help()
     sp("   ·   "), sp(p .. "goal add ma.sp.of level 200", GP.cmd))
 end
 
--- Per-goal drill-down, fired by the clickable `show details` span. Lays the
--- scenarios out as separate labelled figures (green = optimal, yellow = self)
--- so a future "specific teacher" row drops in between without reshaping.
+-- A two-tone [████░░░░] bar at the given fraction: returns the filled and
+-- empty runs separately so each can be coloured (green progress on a muted
+-- track). `width` is the cell count; the fill rounds to the nearest cell.
+local function progress_bar(pct, width)
+  if type(pct) ~= "number" then pct = 0 end
+  local filled = math.floor(pct * width + 0.5)
+  if filled < 0 then filled = 0 elseif filled > width then filled = width end
+  return string.rep("█", filled), string.rep("░", width - filled)
+end
+
+-- An absolute YYYY-MM-DD for a baseline timestamp (os.date is available in the
+-- host runtime, same as os.time); "unknown" if the goal predates stamping.
+local function format_date(ts)
+  if type(ts) ~= "number" then return "unknown" end
+  return os.date("%Y-%m-%d", ts)
+end
+
+-- Per-goal drill-down, fired by the clickable `show details` span. Leads with a
+-- progress block charting started → now → target from the recorded baseline
+-- (level/bonus deltas, a percent bar by XP and by levels, XP invested so far),
+-- then the per-scenario remaining cost (green = optimal, yellow = self) so a
+-- future "specific teacher" row drops in between without reshaping. Legacy
+-- goals with no baseline fall back to a single current → target header line.
 local function print_goal_detail(row)
-  local levels = (row.target_level and row.from_level)
-    and (row.target_level - row.from_level) or nil
-  mud.note(
-    sp(row.skill, { fg = "cyan", bold = true }),
-    sp(": bonus " .. row.from_bonus .. " → "),
-    sp(tostring(row.target_bonus or row.from_bonus), GP.target),
-    sp(string.format("  (level %d → %d%s)",
-      row.from_level, row.target_level or row.from_level,
-      levels and string.format(", +%d levels", levels) or "")))
+  local prog = row.progress
+  if prog then
+    local muted   = { fg = "light black" }
+    local target_level = row.target_level or row.from_level
+    local target_bonus = row.target_bonus or row.from_bonus
+    -- Right-align the bonus/level numerals across the three rows so the columns
+    -- read cleanly regardless of digit count.
+    local nums = { prog.start_bonus, row.from_bonus, target_bonus,
+                   prog.start_level, row.from_level, target_level }
+    local wb, wl = 0, 0
+    for i = 1, 3 do wb = math.max(wb, #tostring(nums[i])) end
+    for i = 4, 6 do wl = math.max(wl, #tostring(nums[i])) end
+    local function point_row(label, bonus_v, level_v, extra_spans)
+      local out = {
+        sp(string.format("  %-9s", label), muted),
+        sp("bonus "),
+        sp(string.format("%" .. wb .. "d", bonus_v), GP.target),
+        sp(string.format("  (level %" .. wl .. "d)", level_v), muted),
+      }
+      for _, s in ipairs(extra_spans or {}) do out[#out + 1] = s end
+      return out
+    end
+
+    mud.note(sp(row.skill, { fg = "cyan", bold = true }))
+    mud.note(table.unpack(point_row("started", prog.start_bonus, prog.start_level,
+      { sp("   " .. format_date(prog.start_at), muted) })))
+    mud.note(table.unpack(point_row("now", row.from_bonus, row.from_level, {
+      sp(string.format("   +%d bonus · +%d levels",
+        prog.bonus_gained or 0, prog.levels_gained or 0), GP.afford),
+    })))
+    mud.note(table.unpack(point_row("target", target_bonus, target_level)))
+
+    -- Percent bar — by XP if priceable (the meaningful, nonlinear measure),
+    -- else level fraction alone. Both percentages annotate the bar.
+    local bar_pct = prog.pct_xp or prog.pct_levels
+    local filled, empty = progress_bar(bar_pct, 18)
+    local pct_text = prog.pct_xp
+      and string.format("%d%% by xp · %d%% by levels",
+        math.floor(prog.pct_xp * 100 + 0.5), math.floor(prog.pct_levels * 100 + 0.5))
+      or string.format("%d%% by levels", math.floor(prog.pct_levels * 100 + 0.5))
+    -- mud.span rejects empty text, so only emit the runs that are non-empty
+    -- (the bar is all-empty at 0% and all-filled at 100%).
+    local bar = { sp("  progress  [") }
+    if filled ~= "" then bar[#bar + 1] = sp(filled, GP.afford) end
+    if empty  ~= "" then bar[#bar + 1] = sp(empty, muted) end
+    bar[#bar + 1] = sp("]  ")
+    bar[#bar + 1] = sp(pct_text, GP.label)
+    mud.note(table.unpack(bar))
+
+    if prog.invested_xp then
+      mud.note(
+        sp("  invested  ", muted),
+        sp("~" .. format_xp_short(prog.invested_xp) .. " xp", GP.afford),
+        sp(" of ~" .. format_xp_short(prog.total_xp) .. " xp", muted))
+    end
+  else
+    local levels = (row.target_level and row.from_level)
+      and (row.target_level - row.from_level) or nil
+    mud.note(
+      sp(row.skill, { fg = "cyan", bold = true }),
+      sp(": bonus " .. row.from_bonus .. " → "),
+      sp(tostring(row.target_bonus or row.from_bonus), GP.target),
+      sp(string.format("  (level %d → %d%s)",
+        row.from_level, row.target_level or row.from_level,
+        levels and string.format(", +%d levels", levels) or "")))
+  end
   for _, sc in ipairs(row.scenarios or {}) do
     local color = (sc.key == "optimal") and "light green"
       or (sc.key == "self") and "yellow" or nil
@@ -1146,6 +1260,7 @@ local function refresh_progress()
 end
 
 local function show_goals(charname)
+  backfill_goal_baselines(charname)
   local inputs = plan_inputs(charname)
   if #inputs.goals == 0 then
     mud.note(sp("goals: none set. Add one with ", GP.warn),
@@ -1343,7 +1458,8 @@ events.on("net.mallard.discworld.skills.updated", function(d)
   if type(d) ~= "table" or d.replay then return end
   local charname = d.charname
   if not charname or charname == "" then return end
-  local list = load_goals(charname)
+  -- A fresh snapshot is the moment to capture any not-yet-baselined goals.
+  local list = backfill_goal_baselines(charname)
   if #list == 0 then return end
   local result = planner.plan({
     skills = (type(d.snapshot) == "table") and d.snapshot or {},
