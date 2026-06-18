@@ -150,8 +150,19 @@ function M.build_snapshot(lines)
         -- Truncate stack to ancestor range, then push the new node.
         for i = parsed.depth + 2, #stack do stack[i] = nil end
         stack[parsed.depth + 1] = parsed.name
-        local path = table.concat(stack, ".", 1, parsed.depth + 1)
-        if parsed.level ~= nil then
+        -- Guard against an orphan cell — a node whose ancestors aren't on the
+        -- stack (a depth jump with no parent). This only happens when the
+        -- column grid is incomplete, e.g. a premature flush on a buffer cut
+        -- mid-stream: column-major reassembly stitches col N's tail to col
+        -- N+1's head, and a truncated col N leaves the depth-first walk with a
+        -- hole. concat over a nil gap would abort the whole snapshot, so drop
+        -- the cell instead (same tolerance as unparseable cells above).
+        local has_gap = false
+        for i = 1, parsed.depth do
+          if stack[i] == nil then has_gap = true; break end
+        end
+        if not has_gap and parsed.level ~= nil then
+          local path = table.concat(stack, ".", 1, parsed.depth + 1)
           level_map[path] = parsed.level
           bonus_map[path] = parsed.bonus
           skill_count = skill_count + 1

@@ -563,7 +563,11 @@ mud.trigger(
 -- Format details and the column-major walk live in src/skills_parser.lua.
 -- ---------------------------------------------------------------------
 
-local SKILLS_ARM_TIMEOUT_SECONDS = 5
+-- How long to wait for the SKILLS header after arming before giving up. The
+-- MUD can be laggy — especially when /goals refresh fires `skills raw` and
+-- `score stats` back to back — so this is generous; it only matters when *no*
+-- output arrives at all (a real line stops the watchdog).
+local SKILLS_ARM_TIMEOUT_SECONDS = 20
 
 -- Diff two skill snapshots into a sorted list of changes. Each entry is
 -- { path, old_lvl, old_bonus, new_lvl, new_bonus }; nil values mean the
@@ -686,7 +690,11 @@ local skills_sm = skills_parser.make({
 -- `invoke_callback: unknown callback id N` warnings. A single recurring
 -- poll is both cheaper and immune to that race.
 local last_absorb_at = nil
-local SKILLS_IDLE_FLUSH_SECONDS = 1
+-- Quiet gap after the last absorbed line that means "output finished, flush
+-- now". Must comfortably exceed any mid-stream pause the MUD/network injects
+-- into a long `skills raw` dump — a premature flush parses an incomplete
+-- column grid (orphans) and then resets, losing the rest of the stream.
+local SKILLS_IDLE_FLUSH_SECONDS = 3
 local function mark_absorbed() last_absorb_at = now_seconds() end
 
 mud.every(250, function()
@@ -767,8 +775,11 @@ end)
 -- Format details and the cell splitter live in src/stats_parser.lua.
 -- ---------------------------------------------------------------------
 
-local STATS_ARM_TIMEOUT_SECONDS = 5
-local STATS_IDLE_FLUSH_SECONDS  = 1
+-- See the skills equivalents above. `score stats` is small and arrives in one
+-- burst, but it can still be slow to *start* when the MUD is laggy or busy
+-- answering a back-to-back `skills raw` — so wait generously for the first line.
+local STATS_ARM_TIMEOUT_SECONDS = 20
+local STATS_IDLE_FLUSH_SECONDS  = 3
 
 -- Diff two stat snapshots into a sorted, human-readable changes string,
 -- e.g. "strength 14 → 15, wisdom 11 → 12". Returns "" if nothing changed.
