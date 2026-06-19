@@ -14,6 +14,7 @@ local skills_parser = require("skills_parser")
 local stats_parser  = require("stats_parser")
 local planner       = require("planner")
 local skill_data    = require("skill_data")
+local skill_query   = require("skill_query")
 
 local panel = mud.panel("vitals")
 
@@ -1043,42 +1044,27 @@ local function disp_width(s)
 end
 
 -- Resolve a user-typed skill query, printing a helpful message and returning
--- nil if it can't be pinned to exactly one skill.
-local function resolve_goal_skill(charname, query)
+-- nil if it can't be pinned to exactly one skill. `label` prefixes the
+-- diagnostics (e.g. "goal" / "skill") so each command speaks in its own voice.
+local function resolve_skill_arg(charname, query, label)
+  label = label or "goal"
   local path, candidates = planner.resolve_skill(query, known_skill_paths(charname))
   if path then return path end
   if #candidates == 0 then
-    mud.note(sp("goal: no skill matches '" .. query .. "'.", GP.err))
+    mud.note(sp(label .. ": no skill matches '" .. query .. "'.", GP.err))
   else
-    mud.note(sp("goal: '" .. query .. "' is ambiguous — did you mean:", GP.err))
+    mud.note(sp(label .. ": '" .. query .. "' is ambiguous — did you mean:", GP.err))
     for _, c in ipairs(candidates) do mud.note(sp("  " .. c, GP.skill)) end
   end
   return nil
 end
 
-local function goal_add(charname, rest)
-  local skill_q, kind, value_s = rest:match("^(%S+)%s+(%S+)%s+(%S+)$")
-  if not skill_q then
-    mud.note(sp("goal: usage — /goal add <skill> <level|bonus> <value>", GP.err))
-    return
-  end
-  kind = kind:lower()
-  if kind ~= "level" and kind ~= "bonus" then
-    mud.note(sp("goal: type must be 'level' or 'bonus' (got '" .. kind .. "').", GP.err))
-    return
-  end
-  local value = to_num(value_s)
-  if not value or value <= 0 then
-    mud.note(sp("goal: value must be a positive number (got '" .. value_s .. "').", GP.err))
-    return
-  end
-  value = math.floor(value)
-  local path = resolve_goal_skill(charname, skill_q)
-  if not path then return end
-
-  -- Snapshot the starting point so /goal detail can chart progress from here.
-  -- Re-adding a goal restarts tracking (the target — and thus what "progress"
-  -- means — has changed). A nil baseline (no snapshot yet) is backfilled later.
+-- Add or update a goal for an already-resolved skill path. Shared by /goal add
+-- and the /skill "add goal" links, so both restart the progress baseline from
+-- the current skill reading on re-add (the target — and thus what "progress"
+-- means — has changed) and print the same confirmation note. A nil baseline
+-- (no snapshot yet) is backfilled later.
+local function upsert_goal(charname, path, kind, value)
   local cur_level, cur_bonus = current_skill_state(charname, path)
   local list = load_goals(charname)
   local replaced = false
@@ -1101,12 +1087,35 @@ local function goal_add(charname, rest)
     sp(path, GP.skill),
     sp("  " .. kind .. " "),
     sp(tostring(value), GP.target))
+  return replaced
+end
+
+local function goal_add(charname, rest)
+  local skill_q, kind, value_s = rest:match("^(%S+)%s+(%S+)%s+(%S+)$")
+  if not skill_q then
+    mud.note(sp("goal: usage — /goal add <skill> <level|bonus> <value>", GP.err))
+    return
+  end
+  kind = kind:lower()
+  if kind ~= "level" and kind ~= "bonus" then
+    mud.note(sp("goal: type must be 'level' or 'bonus' (got '" .. kind .. "').", GP.err))
+    return
+  end
+  local value = to_num(value_s)
+  if not value or value <= 0 then
+    mud.note(sp("goal: value must be a positive number (got '" .. value_s .. "').", GP.err))
+    return
+  end
+  value = math.floor(value)
+  local path = resolve_skill_arg(charname, skill_q, "goal")
+  if not path then return end
+  upsert_goal(charname, path, kind, value)
 end
 
 local function goal_rm(charname, rest)
   local skill_q = rest:match("^(%S+)")
   if not skill_q then mud.note(sp("goal: usage — /goal rm <skill>", GP.err)) return end
-  local path = resolve_goal_skill(charname, skill_q)
+  local path = resolve_skill_arg(charname, skill_q, "goal")
   if not path then return end
   local list = load_goals(charname)
   local kept, found = {}, false
@@ -1259,6 +1268,33 @@ local function refresh_progress()
   mud.send("score stats", { silent = true })
 end
 
+-- Freshness footer shared by /goals and /skill: how long ago skills/stats were
+-- last pulled off the wire, plus the one-stop command to update them (a
+-- clickable span that runs refresh_progress directly, so no typing). Ages read
+-- the saved_at stamp the parsers write at flush; "never" (no snapshot) is
+-- highlighted, and a pre-stamp snapshot shows "time unknown". `refresh_cmd` is
+-- the command literal to display (e.g. "goals refresh" / "skill refresh") — the
+-- click bypasses parsing, so it's purely for show.
+local function print_freshness_line(charname, refresh_cmd)
+  local function age_label(snap)
+    if type(snap) ~= "table" then return "never", true end
+    if type(snap.saved_at) ~= "number" then return "time unknown", false end
+    return format_duration(now_seconds() - snap.saved_at) .. " ago", false
+  end
+  local sk_age, sk_never = age_label(storage.get("skills/" .. charname))
+  local st_age, st_never = age_label(storage.get("stats/" .. charname))
+  local muted = { fg = "light black" }
+  mud.note(
+    sp("  skills ", muted), sp(sk_age, sk_never and GP.warn or muted),
+    sp("  ·  stats ", muted), sp(st_age, st_never and GP.warn or muted),
+    sp("  ·  ", muted),
+    sp(pfx() .. refresh_cmd, {
+      fg = "light cyan", bold = true, underline = true,
+      on_click = function() refresh_progress() end,
+    }),
+    sp(" to update", muted))
+end
+
 local function show_goals(charname)
   backfill_goal_baselines(charname)
   local inputs = plan_inputs(charname)
@@ -1316,30 +1352,8 @@ local function show_goals(charname)
     sp(format_xp_short(result.total_self) .. " xp", GP.selfc),
     sp(" (self)"))
 
-  -- Freshness line: how long ago skills/stats were last pulled off the wire,
-  -- with the one-stop command to update them. Ages read the saved_at stamp the
-  -- parsers write at flush. "never" (no snapshot) is highlighted; a snapshot
-  -- saved before this stamp existed shows "time unknown".
-  local function age_label(snap)
-    if type(snap) ~= "table" then return "never", true end
-    if type(snap.saved_at) ~= "number" then return "time unknown", false end
-    return format_duration(now_seconds() - snap.saved_at) .. " ago", false
-  end
-  local sk_age, sk_never = age_label(storage.get("skills/" .. charname))
-  local st_age, st_never = age_label(storage.get("stats/" .. charname))
-  local muted = { fg = "light black" }
-  -- The hint is a clickable span that runs the refresh directly, so the user
-  -- never has to type it. The label uses the live command prefix (the user may
-  -- have remapped it off "/") purely for display — the click bypasses parsing.
-  mud.note(
-    sp("  skills ", muted), sp(sk_age, sk_never and GP.warn or muted),
-    sp("  ·  stats ", muted), sp(st_age, st_never and GP.warn or muted),
-    sp("  ·  ", muted),
-    sp(pfx() .. "goals refresh", {
-      fg = "light cyan", bold = true, underline = true,
-      on_click = function() refresh_progress() end,
-    }),
-    sp(" to update", muted))
+  -- Freshness line (clickable refresh) — shared with /skill.
+  print_freshness_line(charname, "goals refresh")
 
   -- Build + emit each row, tracking the widest rendered line so the
   -- afford-now divider below can match the table width.
@@ -1448,6 +1462,155 @@ mud.command("goals", function(m)
 end, {
   description = "Show cheapest XP cost and progress toward your skill goals.",
   usage = "goals | goals refresh",
+})
+
+-- ---------------------------------------------------------------------
+-- /skill — inspect a single skill: its current level/bonus, the stat
+-- contributions feeding its multiplicator, and (with an optional number) a
+-- dual reading of that number as a target bonus AND a target level — so the
+-- user never has to say which they meant. Each not-yet-reached reading offers a
+-- one-click "add goal". `/skill refresh` reuses the shared skills+stats fetch.
+-- ---------------------------------------------------------------------
+
+local function skill_help()
+  local p = pfx()
+  local function line(cmd, desc)
+    mud.note(sp(string.format("  %-34s", cmd), GP.cmd), sp(desc))
+  end
+  mud.note(sp("skill — inspect one skill's level, bonus, and stat contributions:", GP.label))
+  line(p .. "skill <skill>",          "show level, bonus, and stat contributions")
+  line(p .. "skill <skill> <number>", "also read the number as a target bonus AND level")
+  line(p .. "skill refresh",          "re-fetch skills + stats from the MUD")
+  line(p .. "skill help",             "show this help")
+  mud.note(sp("  skills accept abbreviations: "), sp("ma.sp.of", GP.skill),
+    sp(" → "), sp("magic.spells.offensive", GP.skill))
+  mud.note(sp("  examples:  "), sp(p .. "skill fi.me.sw", GP.cmd),
+    sp("   ·   "), sp(p .. "skill ma.sp.of 550", GP.cmd))
+end
+
+local function show_skill(charname, query, target)
+  local path = resolve_skill_arg(charname, query, "skill")
+  if not path then return end
+
+  local snap     = storage.get("skills/" .. charname)
+  local has_snap = type(snap) == "table" and type(snap.level) == "table"
+  local level    = (has_snap and snap.level[path]) or 0
+  local bonus_v  = (has_snap and snap.bonus) and snap.bonus[path] or nil
+  local stats    = char_stats(charname)
+
+  local info = skill_query.describe({
+    path = path, level = level, bonus = bonus_v, stats = stats, target = target })
+
+  local muted = { fg = "light black" }
+
+  -- Header: the same "name: " lead-in the rest of the family uses ("goals:",
+  -- "goal added:") — bold label, cyan-bold skill path, then its abbreviation in
+  -- the skill cyan so it reads as a lighter echo of the path.
+  mud.note(
+    sp("skill: ", GP.label),
+    sp(path, { fg = "cyan", bold = true }),
+    sp("  ·  " .. skill_data.abbreviate(path), GP.skill))
+
+  -- Current level / bonus, joined by the family's muted "·" separator. (The
+  -- multiplicator M still drives the target readings below, but it's an
+  -- internal detail we don't surface.)
+  local cur = { sp("  level ", muted), sp(tostring(info.level), GP.target) }
+  if info.bonus ~= nil then
+    cur[#cur + 1] = sp("  ·  bonus ", muted)
+    cur[#cur + 1] = sp(tostring(info.bonus), GP.target)
+  end
+  mud.note(table.unpack(cur))
+
+  -- Stat contributions: which stats feed M, their slot weight, current value.
+  if info.contributions and #info.contributions > 0 then
+    local out = { sp("  stats  ", muted) }
+    for i, c in ipairs(info.contributions) do
+      if i > 1 then out[#out + 1] = sp(" · ", muted) end
+      out[#out + 1] = sp(c.stat, GP.skill)
+      if c.count > 1 then out[#out + 1] = sp(" ×" .. c.count, muted) end
+      if c.value then out[#out + 1] = sp(" (" .. c.value .. ")", GP.target) end
+    end
+    mud.note(table.unpack(out))
+  end
+
+  -- Target readings — the same number read both ways, each with a one-click
+  -- "add goal" when it isn't already satisfied.
+  local t = info.target
+  if t then
+    if t.no_mult then
+      mud.note(sp("  need your stats to project a target — ", GP.warn),
+        sp(pfx() .. "skill refresh", GP.cmd))
+    else
+      -- The same number read both ways, vertically aligned: the corresponding
+      -- value (level↔bonus) right-justified into a shared column, then the
+      -- signed delta-from-now right-justified inside the parens with its unit
+      -- left-justified — so the two lines stack cleanly. The corresponding value
+      -- is always shown (even for a target below where you stand, hence the
+      -- signed delta); a clickable add-goal is appended only when the current
+      -- skill doesn't already satisfy the target.
+      local ab, al = t.as_bonus, t.as_level
+      local function delta_str(n)
+        return string.format("%s%d", n >= 0 and "+" or "-", math.abs(n))
+      end
+      local w_num   = math.max(#tostring(ab.level_needed), #tostring(al.bonus_reached))
+      local w_delta = math.max(#delta_str(ab.extra_levels), #delta_str(al.extra_bonus))
+      local w_unit  = math.max(#"levels", #"bonus")
+
+      local function corresponds(kind_word, opp_word, num, delta_n, unit, goal_kind, already)
+        local numstr = tostring(num)
+        local paren  = string.format("(%" .. w_delta .. "s %-" .. w_unit .. "s)",
+          delta_str(delta_n), unit)
+        local out = {
+          sp(string.format("  %-5s %d corresponds to : ", kind_word, t.value), muted),
+          sp(opp_word .. " " .. string.rep(" ", w_num - #numstr), muted),
+          sp(numstr, GP.target),
+          sp(" "),
+          -- A forward climb (+) is the family's green "afford" idiom; a target
+          -- you've already passed (−) stays muted.
+          sp(paren, delta_n > 0 and GP.afford or muted),
+        }
+        if not already then
+          out[#out + 1] = sp("   ")
+          out[#out + 1] = sp("add goal", {
+            fg = "cyan", underline = true,
+            on_click = function() upsert_goal(charname, path, goal_kind, t.value) end,
+          })
+        end
+        mud.note(table.unpack(out))
+      end
+
+      corresponds("bonus", "level", ab.level_needed,  ab.extra_levels, "levels", "bonus", ab.already)
+      corresponds("level", "bonus", al.bonus_reached, al.extra_bonus,  "bonus",  "level", al.already)
+    end
+  end
+
+  print_freshness_line(charname, "skill refresh")
+end
+
+mud.command("skill", function(m)
+  local args = ((m and m.args) or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  local low = args:lower()
+  if args == "" or low == "help" or low == "?" then skill_help() return end
+  if low == "refresh" then refresh_progress() return end
+  local charname = goal_charname()
+  if not charname or charname == "" then
+    mud.note(sp("skill: no character yet — log in first.", GP.err))
+    return
+  end
+  local query, target_s = args:match("^(%S+)%s+(%S+)")
+  if not query then query = args end
+  local target
+  if target_s then
+    target = to_num(target_s)
+    if not target or target <= 0 then
+      mud.note(sp("skill: target must be a positive number (got '" .. target_s .. "').", GP.err))
+      return
+    end
+  end
+  show_skill(charname, query, target)
+end, {
+  description = "Inspect a skill's level, bonus, stat contributions, and targets.",
+  usage = "skill <skill> [<level|bonus>] | skill refresh",
 })
 
 -- Announce a goal the moment a skills refresh shows it newly met. We mark the

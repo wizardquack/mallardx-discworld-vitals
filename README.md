@@ -7,7 +7,11 @@ Vitals panel for Discworld MUD, with:
 - realtime shielding indicators (EFF / CCC / BUG / MS / TPA)
 
 Additionally this plugin provides skill-, stat-, and xp-aware goal
-tracking for your characters. Enter /goals to get started.
+tracking for your characters. Enter /goals to get started, or /skill
+&lt;skill&gt; to inspect a single skill's level, bonus, and the stats that
+feed it — add an optional number (e.g. /skill ma.sp.of 550) to see what
+level a target bonus needs and what bonus a target level gives, with a
+one-click "add goal" for either.
 
 ## A note on cross-plugin events
 
