@@ -131,12 +131,22 @@ end
 --           reachable = bool, stalled_at = L | nil }
 -- reachable is false (with stalled_at set) if some level has no eligible
 -- method before the target — e.g. a guild-only primary aiming past 300.
+--
+-- The climb is bounded by opts.max_level (default DEFAULT_MAX_LEVEL) so a
+-- pathological target can't spin this loop for millions of iterations — e.g. a
+-- bonus goal whose tiny multiplicator resolves to an astronomically high level,
+-- or a fat-fingered `level 999999` goal. A target beyond the cap is reported as
+-- unreachable (stalled_at = the cap), the same shape callers already handle for
+-- a level with no eligible method. Real Discworld goals sit far below the cap,
+-- so this never affects a legitimate plan.
 -- ---------------------------------------------------------------------
-function M.cost_to_target(mult, from_level, to_level, methods)
+function M.cost_to_target(mult, from_level, to_level, methods, opts)
   if type(from_level) ~= "number" or type(to_level) ~= "number" then return nil end
+  local max_level = (opts and opts.max_level) or DEFAULT_MAX_LEVEL
+  local capped_to = (to_level > max_level) and max_level or to_level
   local rows, total = {}, 0
   local reachable, stalled_at = true, nil
-  for level = from_level, to_level - 1 do
+  for level = from_level, capped_to - 1 do
     local lc = M.level_cost(level, mult, methods)
     if not lc then
       reachable, stalled_at = false, level
@@ -145,6 +155,11 @@ function M.cost_to_target(mult, from_level, to_level, methods)
     rows[#rows + 1] = { level = level, bonus = lc.bonus,
       cost = lc.cost, method = lc.method }
     total = total + lc.cost
+  end
+  -- The real target lies beyond the sane cap — we stopped short, so it's not
+  -- reachable within bounds (don't pass off the partial total as the answer).
+  if reachable and capped_to < to_level then
+    reachable, stalled_at = false, max_level
   end
   return { total_xp = total, levels = rows,
     reachable = reachable, stalled_at = stalled_at }

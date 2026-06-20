@@ -131,6 +131,20 @@ test("cost_to_target reports unreachable when a level stalls", function()
   eq(res.stalled_at, cost.GUILD_TEACH_MAX_LEVEL, "stalled at cap")
 end)
 
+test("cost_to_target caps a pathological target instead of looping", function()
+  -- A target far beyond the runaway ceiling must terminate quickly and report
+  -- unreachable (stalled at the cap), not grind through millions of levels.
+  local res = forecast.cost_to_target(M, 100, 10000000, { { kind = "self" } })
+  eq(res.reachable, false, "absurd target is unreachable within bounds")
+  eq(res.stalled_at, 5000, "stalled at the default max level")
+  -- A custom cap is honoured, and the work done stays bounded by it.
+  local res2 = forecast.cost_to_target(M, 100, 10000000, { { kind = "self" } },
+    { max_level = 200 })
+  eq(res2.reachable, false, "still unreachable under a tighter cap")
+  eq(res2.stalled_at, 200, "stalled at the custom cap")
+  eq(#res2.levels, 100, "only priced levels 100..199 before the cap")
+end)
+
 -- ---------------------------------------------------------------------
 -- max_under_budget — the inverse, consistent with cost_to_target.
 -- ---------------------------------------------------------------------
