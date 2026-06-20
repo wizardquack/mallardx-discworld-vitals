@@ -1181,23 +1181,43 @@ local function print_goal_detail(row)
     local wb, wl = 0, 0
     for i = 1, 3 do wb = math.max(wb, #tostring(nums[i])) end
     for i = 4, 6 do wl = math.max(wl, #tostring(nums[i])) end
+    -- Lead with the metric the goal actually targets — a level goal reads
+    -- "level 700  (bonus 548)", a bonus goal "bonus 646  (level 922)" — with
+    -- the other metric tucked in parens. The primary value is emphasised; the
+    -- parenthetical stays muted.
+    local is_level = row.goal_type == "level"
     local function point_row(label, bonus_v, level_v, extra_spans)
+      local prim_word, prim_v, prim_w, sec_word, sec_v, sec_w
+      if is_level then
+        prim_word, prim_v, prim_w = "level", level_v, wl
+        sec_word,  sec_v,  sec_w  = "bonus", bonus_v, wb
+      else
+        prim_word, prim_v, prim_w = "bonus", bonus_v, wb
+        sec_word,  sec_v,  sec_w  = "level", level_v, wl
+      end
       local out = {
         sp(string.format("  %-9s", label), muted),
-        sp("bonus "),
-        sp(string.format("%" .. wb .. "d", bonus_v), GP.target),
-        sp(string.format("  (level %" .. wl .. "d)", level_v), muted),
+        sp(prim_word .. " "),
+        sp(string.format("%" .. prim_w .. "d", prim_v), GP.target),
+        sp(string.format("  (%s %" .. sec_w .. "d)", sec_word, sec_v), muted),
       }
       for _, s in ipairs(extra_spans or {}) do out[#out + 1] = s end
       return out
     end
 
+    -- Order the "now" deltas to match the row's lead metric: a level goal
+    -- reads "+10 levels · +5 bonus", a bonus goal "+5 bonus · +10 levels".
+    local bonus_delta = string.format("+%d bonus", prog.bonus_gained or 0)
+    local level_delta = string.format("+%d levels", prog.levels_gained or 0)
+    local now_deltas = is_level
+      and (level_delta .. " · " .. bonus_delta)
+      or  (bonus_delta .. " · " .. level_delta)
+
     mud.note(sp(row.skill, { fg = "cyan", bold = true }))
     mud.note(table.unpack(point_row("started", prog.start_bonus, prog.start_level,
       { sp("   " .. format_date(prog.start_at), muted) })))
     mud.note(table.unpack(point_row("now", row.from_bonus, row.from_level, {
-      sp(string.format("   +%d bonus · +%d levels",
-        prog.bonus_gained or 0, prog.levels_gained or 0), GP.afford),
+      sp("   " .. now_deltas, GP.afford),
     })))
     mud.note(table.unpack(point_row("target", target_bonus, target_level)))
 
