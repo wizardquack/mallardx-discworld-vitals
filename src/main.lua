@@ -634,6 +634,9 @@ local function print_skills_diff(charname, changes)
   end
 end
 
+-- Forward-declared so on_state_change (below) can reach the on-demand
+-- idle/arm watchdog; the watchdog itself is defined just after this make().
+local ensure_skills_poll, stop_skills_poll
 local skills_sm = skills_parser.make({
   -- The full Discworld tree is ~190 leaves. Set the floor well below that
   -- so we still accept legitimate parses if the tree shrinks slightly, but
@@ -682,30 +685,58 @@ local skills_sm = skills_parser.make({
       " changed since last refresh)"
     )
   end,
+  -- Start/stop the idle/arm watchdog so it only runs during an actual
+  -- refresh (armed/collecting), not for the whole idle session.
+  on_state_change = function(mode)
+    if mode == "idle" then stop_skills_poll() else ensure_skills_poll() end
+  end,
 })
 
--- A single 250 ms poll handles both arm-timeout and idle-flush. We
--- previously used `mud.delay` reschedule-on-each-absorb, but that churned
--- one scheduled-callback handle per absorbed line and was racy: the engine
--- could fire a handle on the same tick we removed it, producing
--- `invoke_callback: unknown callback id N` warnings. A single recurring
--- poll is both cheaper and immune to that race.
+-- On-demand idle/arm watchdog. Runs ONLY while the SM is armed or
+-- collecting: on_state_change (above) starts it on the idle→active
+-- transition and stops it on the return to idle, so we don't burn a fixed
+-- 4×/sec poll on the shared Lua VM through the long idle stretches. We
+-- previously used `mud.delay` reschedule-on-each-absorb, which churned one
+-- handle per absorbed line and was racy; this churns one handle per refresh
+-- cycle and only ever removes a handle from arm context (see below).
 local last_absorb_at = nil
 -- Quiet gap after the last absorbed line that means "output finished, flush
 -- now". Must comfortably exceed any mid-stream pause the MUD/network injects
 -- into a long `skills raw` dump — a premature flush parses an incomplete
 -- column grid (orphans) and then resets, losing the rest of the stream.
 local SKILLS_IDLE_FLUSH_SECONDS = 3
+local skills_poll = nil          -- last mud.every handle (may be disabled)
+local skills_poll_active = false -- is it currently scheduled?
 local function mark_absorbed() last_absorb_at = now_seconds() end
 
-mud.every(250, function()
+local function skills_tick()
   local now = now_seconds()
   skills_sm.try_arm_timeout(now, SKILLS_ARM_TIMEOUT_SECONDS)
   if last_absorb_at and (now - last_absorb_at) >= SKILLS_IDLE_FLUSH_SECONDS then
     last_absorb_at = nil
-    skills_sm.try_flush(now)
+    skills_sm.try_flush(now)   -- may drive the SM → idle → stop_skills_poll
   end
-end)
+end
+
+-- `mud.every` handles can't be re-enabled once disabled (host API), so each
+-- active window gets a fresh handle. We reclaim the prior (disabled)
+-- handle's callback id here — only ever from arm/header context, never from
+-- inside skills_tick — to avoid the self-remove "unknown callback id" race.
+ensure_skills_poll = function()
+  if skills_poll_active then return end
+  if skills_poll then skills_poll:remove() end
+  skills_poll = mud.every(500, skills_tick)
+  skills_poll_active = true
+end
+
+-- Called (via on_state_change) from inside skills_tick on the flush/timeout
+-- that returns the SM to idle. disable() stops the scheduler entry without
+-- dropping the callback id — the part that is unsafe to do mid-fire.
+stop_skills_poll = function()
+  if not skills_poll_active then return end
+  if skills_poll then skills_poll:disable() end
+  skills_poll_active = false
+end
 
 -- Header trigger flips armed → collecting. The pattern is the documented
 -- start-of-output marker that Discworld emits at the top of `skills raw`.
@@ -813,6 +844,9 @@ local function diff_stats_inline(prev, current)
   return table.concat(parts, ", ")
 end
 
+-- Forward-declared so on_state_change (below) can reach the on-demand
+-- idle/arm watchdog; the watchdog itself is defined just after this make().
+local ensure_stats_poll, stop_stats_poll
 local stats_sm = stats_parser.make({
   -- Exactly five core stats in the snapshot; setting the floor at 5 means
   -- we drop interrupted/partial captures rather than persist an incomplete
@@ -847,22 +881,44 @@ local stats_sm = stats_parser.make({
       mud.note(prefix .. " (" .. changes .. ")")
     end
   end,
+  -- Start/stop the idle/arm watchdog so it only runs during an actual
+  -- refresh (armed/collecting), not for the whole idle session.
+  on_state_change = function(mode)
+    if mode == "idle" then stop_stats_poll() else ensure_stats_poll() end
+  end,
 })
 
--- Parallel to the skills 250 ms poll: handles both arm-timeout and idle-
--- flush. Independent of the skills poll so the state machines stay
+-- Parallel to the skills watchdog: on-demand, runs only while armed or
+-- collecting. Independent of the skills poll so the state machines stay
 -- decoupled and so removing either parser later is a single-section edit.
 local last_stats_absorb_at = nil
+local stats_poll = nil          -- last mud.every handle (may be disabled)
+local stats_poll_active = false -- is it currently scheduled?
 local function mark_stats_absorbed() last_stats_absorb_at = now_seconds() end
 
-mud.every(250, function()
+local function stats_tick()
   local now = now_seconds()
   stats_sm.try_arm_timeout(now, STATS_ARM_TIMEOUT_SECONDS)
   if last_stats_absorb_at and (now - last_stats_absorb_at) >= STATS_IDLE_FLUSH_SECONDS then
     last_stats_absorb_at = nil
-    stats_sm.try_flush(now)
+    stats_sm.try_flush(now)   -- may drive the SM → idle → stop_stats_poll
   end
-end)
+end
+
+-- See ensure_skills_poll for why each window gets a fresh handle and why we
+-- only remove() from arm/header context, never from inside stats_tick.
+ensure_stats_poll = function()
+  if stats_poll_active then return end
+  if stats_poll then stats_poll:remove() end
+  stats_poll = mud.every(500, stats_tick)
+  stats_poll_active = true
+end
+
+stop_stats_poll = function()
+  if not stats_poll_active then return end
+  if stats_poll then stats_poll:disable() end
+  stats_poll_active = false
+end
 
 -- Absorber: any line containing at least one stat-shaped cell. `on_line`
 -- returns true only when we're actively collecting (= /stats-refresh
