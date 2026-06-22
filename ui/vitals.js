@@ -169,8 +169,13 @@ function renderShield(key, shield) {
   }));
 }
 
+// Latest known character name, mirrored from state for the context-menu
+// header. Null until the Lua side learns who we're logged in as.
+let currentCharname = null;
+
 function applyState(state) {
   if (!state || typeof state !== "object") return;
+  currentCharname = state.charname || null;
   renderXp(state.xp, state.xp_rate);
   renderChart(state.xp_chart);
   const shields = state.shields || {};
@@ -178,6 +183,20 @@ function applyState(state) {
   renderBar(hpBarEl, hpFillEl, hpValueEl, state.hp, "hp");
   renderBar(null,    gpFillEl, gpValueEl, state.gp, "gp");
   renderBurden(state.burden);
+}
+
+// Native right-click context menu (mallard >= 0.11.0). Feature-detected so
+// the panel still works on older hosts, where panel.menu is undefined and the
+// browser's default menu shows instead. The "Show goals" onClick runs in this
+// iframe, so it just posts to the Lua side, which executes the /goals path.
+if (panel.menu && typeof panel.menu.show === "function") {
+  document.addEventListener("contextmenu", (e) => {
+    const header = currentCharname ? `Vitals: ${currentCharname}` : "Vitals";
+    panel.menu.show(e, [
+      { header: true, label: header },
+      { label: "Show goals", onClick: () => panel.post("show_goals", {}) },
+    ]);
+  });
 }
 
 panel.on("state", applyState);

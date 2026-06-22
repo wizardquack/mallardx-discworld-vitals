@@ -26,6 +26,7 @@ local panel = mud.panel("vitals")
 -- ---------------------------------------------------------------------
 
 local state = {
+  charname = nil,         -- current character name | nil   (for the panel menu header)
   hp       = nil,         -- { value, max } | nil
   gp       = nil,         -- { value, max } | nil
   burden   = nil,         -- 0..100 | nil
@@ -45,6 +46,14 @@ local state = {
 }
 
 local function push_state() panel:post("state", state) end
+
+-- Keep the panel told who we're logged in as, so its right-click menu can
+-- show a "Vitals: <charname>" header. Only re-push on an actual change.
+local function set_charname(name)
+  if type(name) ~= "string" or name == "" or name == state.charname then return end
+  state.charname = name
+  push_state()
+end
 
 panel:on_message("ready", function() push_state() end)
 
@@ -220,7 +229,10 @@ gmcp.on("char.info", function(_pkg, data)
   -- Hydrate is idempotent per (charname) — repeated info updates with the
   -- same name don't re-hydrate. A name change (alt switch) triggers a
   -- fresh hydrate and from then on saves the new alt's slot.
-  if type(data.name) == "string" then hydrate_xp_state(data.name) end
+  if type(data.name) == "string" then
+    hydrate_xp_state(data.name)
+    set_charname(data.name)
+  end
 end)
 
 -- ---------------------------------------------------------------------
@@ -1540,6 +1552,20 @@ end, {
   usage = "goals | goals refresh",
 })
 
+-- Panel right-click context menu (mallard-native, app >= 0.11.0). The menu
+-- itself is declared UI-side in ui/vitals.js; its "Show goals" item posts
+-- here so we run the exact same path as the `/goals` command's default
+-- branch. Registered down here (not next to push_state) because the closure
+-- needs goal_charname / show_goals, both defined earlier in the file.
+panel:on_message("show_goals", function()
+  local charname = goal_charname()
+  if not charname or charname == "" then
+    mud.note(sp("goals: no character yet — log in first.", GP.err))
+    return
+  end
+  show_goals(charname)
+end)
+
 -- ---------------------------------------------------------------------
 -- /skill — inspect a single skill: its current level/bonus, the stat
 -- contributions feeding its multiplicator, and (with an optional number) a
@@ -1733,4 +1759,5 @@ end)
 local cached_name = gmcp.get("char.info.name")
 if type(cached_name) == "string" and cached_name ~= "" then
   hydrate_xp_state(cached_name)
+  set_charname(cached_name)
 end
