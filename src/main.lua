@@ -15,6 +15,7 @@ local stats_parser  = require("stats_parser")
 local planner       = require("planner")
 local skill_data    = require("skill_data")
 local skill_query   = require("skill_query")
+local panel_push    = require("panel_push")
 
 local panel = mud.panel("vitals")
 
@@ -45,7 +46,12 @@ local state = {
   },
 }
 
-local function push_state() panel:post("state", state) end
+-- Change-gated: re-posting the full snapshot on every mutation is correct but
+-- wasteful — most mutations (periodic char.vitals refresh, GP regen tick, XP
+-- bucket with an unchanged rate) leave the rendered state identical. panel_push
+-- suppresses those no-op posts, cutting load on the shared plugin runtime.
+local _pusher = panel_push.new(function(s) panel:post("state", s) end)
+local function push_state() _pusher.push(state) end
 
 -- Keep the panel told who we're logged in as, so its right-click menu can
 -- show a "Vitals: <charname>" header. Only re-push on an actual change.
@@ -55,7 +61,8 @@ local function set_charname(name)
   push_state()
 end
 
-panel:on_message("ready", function() push_state() end)
+-- A (re)opened iframe holds no state, so force a full repaint past the gate.
+panel:on_message("ready", function() _pusher.force(state) end)
 
 -- ---------------------------------------------------------------------
 -- Formatting helpers
@@ -397,7 +404,6 @@ end
 -- reset them; the TPA handlers further down read & write them).
 local tpa_glow         = ""
 local tpa_percent      = nil
-local tpa_started_at   = nil
 local tpa_down_summary = nil
 
 -- Per-type "up" detail formatters. The returned string is appended after
@@ -473,27 +479,24 @@ events.on("net.mallard.discworld.shield.cleared", function(d)
   end
   tpa_glow         = ""
   tpa_percent      = nil
-  tpa_started_at   = nil
   tpa_down_summary = nil
   push_state()
 end)
 
--- TPA: rich detail. While up we show "<percent>% · <Glow> · <age>". On
--- break we freeze a "Broken · N hits · duration" summary and stop ticking.
--- (Tracking locals declared above so shield.cleared can reset them.)
+-- TPA: rich detail. While up we show "<percent>% · <Glow>". On break we freeze
+-- a "Broken · N hits · duration" summary. (Live age tracking was dropped: a
+-- per-second age counter meant a 1 Hz timer reposting the whole snapshot for
+-- the lifetime of the shield — pure churn on the shared plugin runtime for a
+-- cosmetic readout. The break summary still reports total duration.)
 
 local function tpa_format_up()
   local pct  = (tpa_percent ~= nil) and (tpa_percent .. "%") or "?%"
   local glow = (tpa_glow   ~= "")   and title_case(tpa_glow)  or "?"
-  local age  = tpa_started_at and format_duration(os.time() - tpa_started_at) or "?"
-  return pct .. " · " .. glow .. " · " .. age
+  return pct .. " · " .. glow
 end
 
 events.on("net.mallard.discworld.shield.up", function(data)
   if type(data) ~= "table" or data.subject ~= "self" or data.type ~= "tpa" then return end
-  if state.shields.tpa.state ~= "up" then
-    tpa_started_at = os.time()
-  end
   tpa_glow    = data.glow    or ""
   tpa_percent = data.percent or nil
   shield_set("tpa", "up", tpa_format_up())
@@ -511,17 +514,7 @@ events.on("net.mallard.discworld.shield.down", function(data)
   else
     tpa_down_summary = "Broken"
   end
-  tpa_started_at = nil
   shield_set("tpa", "down", tpa_down_summary)
-end)
-
--- Keep the "age" segment fresh while the shield is up. 1s tick is
--- plenty for second-resolution duration; idle when state != "up" so
--- we don't churn the panel unnecessarily.
-mud.every(1000, function()
-  if state.shields.tpa.state == "up" then
-    shield_set("tpa", "up", tpa_format_up())
-  end
 end)
 
 -- ---------------------------------------------------------------------
