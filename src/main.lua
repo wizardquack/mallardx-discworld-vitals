@@ -1706,6 +1706,9 @@ mud.command("skill", function(m)
 end, {
   description = "Inspect a skill's level, bonus, stat contributions, and targets.",
   usage = "skill <skill> [<level|bonus>] | skill refresh",
+  -- `/sk` shortcut. Ignored by Mallard < 0.15 (unknown opts keys are silently
+  -- dropped), so this stays backward-compatible without a minimum_app_version bump.
+  aliases = "sk",
 })
 
 -- Announce a goal the moment a skills refresh shows it newly met. We mark the
