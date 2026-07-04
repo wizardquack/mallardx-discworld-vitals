@@ -146,11 +146,29 @@ end
 -- by a few points would re-trigger the chime every combat round. Threshold
 -- ported from Quow's UpdateVitals (QuowMinimap.xml:17371).
 local gp_full_armed = false
+local gp_was_full   = false
 local GP_FULL_ARM_THRESHOLD = 0.75
 
 local function set_gp(v, m)
   if not (v and m) then return end
   state.gp = { value = v, max = m }
+
+  -- Broadcast the GP-full moment so peer plugins (e.g. discworld-magic, to
+  -- resume casting) can react. Edge-triggered on the not-full → full
+  -- transition: any refill to max fires it exactly once (no 75%-dip gate),
+  -- and it won't re-fire on the authoritative refreshes that keep landing
+  -- while GP sits pinned at max. Emitted independently of the user's local
+  -- gp_full_sound preference. Complements the inbound
+  -- `net.mallard.discworld.gp.zero` we already subscribe to.
+  local is_full = m > 0 and v >= m
+  if is_full and not gp_was_full then
+    events.emit("net.mallard.discworld.gp.full", { subject = "self", gp = v, maxgp = m })
+  end
+  gp_was_full = is_full
+
+  -- The chime keeps its own arm-then-fire gate: a dip below 75% arms it, the
+  -- next refill fires it. Without the arm step a single GP-nicking cast would
+  -- re-chime every combat round.
   if m > 0 and v < m * GP_FULL_ARM_THRESHOLD then
     gp_full_armed = true
   elseif v >= m and gp_full_armed then
