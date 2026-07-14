@@ -1424,7 +1424,9 @@ local function show_goals(charname)
       cell.note = "(error: " .. row.error .. ")"
     elseif row.done then
       cell.done = true
-      cell.done_text = string.format("bonus %d", row.from_bonus)
+      cell.done_text = (row.goal_type == "level")
+        and string.format("level %d", row.from_level)
+        or string.format("bonus %d", row.from_bonus)
     else
       local is_level = row.goal_type == "level"
       cell.metric = is_level and "level" or "bonus"
