@@ -385,6 +385,25 @@ mud.every(XP_BUCKET_SECONDS * 1000, function()
   push_state()
 end)
 
+-- Reset the rolling xp/hour window on demand — wipes the tracker buffer, the
+-- chart series, and the headline rate, then re-persists the emptied state so
+-- a relog doesn't rehydrate the discarded buckets. The next 10s tick reseeds
+-- the baseline against the current xp, so the rate climbs from zero again.
+-- Useful when starting a fresh grind and the trailing average from an earlier
+-- session (or an idle stretch) is skewing the reported figure.
+mud.command("xp-reset", function()
+  tracker.reset()
+  local series = state.xp_chart.series
+  for i = #series, 1, -1 do series[i] = nil end
+  state.xp_rate = nil
+  save_xp_state()
+  push_state()
+  mud.note("xp-reset: xp/hour tracking cleared.")
+end, {
+  description = "Clear the xp/hour tracking history and chart.",
+  usage = "xp-reset",
+})
+
 -- ---------------------------------------------------------------------
 -- GP optimistic regen — one combat round (~2s). Authoritative sources
 -- overwrite the optimistic value when they arrive.
@@ -593,6 +612,12 @@ mud.trigger(
 -- output arrives at all (a real line stops the watchdog).
 local SKILLS_ARM_TIMEOUT_SECONDS = 20
 
+-- Interruption guard threshold. A refresh whose skill count fell below this
+-- fraction of the last accepted one is treated as a partial capture (an
+-- idle-flush that fired during a mid-stream `skills raw` pause) and dropped,
+-- since real skill counts don't shrink. See on_flush below.
+local SKILLS_MIN_COMPLETE_FRACTION = 0.75
+
 -- Diff two skill snapshots into a sorted list of changes. Each entry is
 -- { path, old_lvl, old_bonus, new_lvl, new_bonus }; nil values mean the
 -- path was added (no old_*) or removed (no new_*).
@@ -661,10 +686,14 @@ end
 -- idle/arm watchdog; the watchdog itself is defined just after this make().
 local ensure_skills_poll, stop_skills_poll
 local skills_sm = skills_parser.make({
-  -- The full Discworld tree is ~190 leaves. Set the floor well below that
-  -- so we still accept legitimate parses if the tree shrinks slightly, but
-  -- comfortably above any plausible interrupted or garbage capture.
-  min_skills    = 100,
+  -- Structural sanity floor only. The SKILLS-header gate already guarantees
+  -- this is a genuine `skills raw` dump, so this just rejects a near-empty
+  -- premature flush. It MUST sit below a legitimately small character — a new
+  -- player can have well under 100 skills — so it is deliberately tiny; the
+  -- real completeness protection is the interruption guard in on_flush, which
+  -- compares against the character's own previous count rather than a fixed
+  -- magnitude that new characters can't clear.
+  min_skills    = 5,
   on_log        = function(_level, msg) mud.note(msg) end,
   on_flush      = function(snapshot)
     -- char.info.name is guaranteed by login ordering — see plugin.toml
@@ -676,6 +705,21 @@ local skills_sm = skills_parser.make({
       return
     end
     local prev = storage.get("skills/" .. charname)
+    -- Interruption guard. Skills never decrease on Discworld, so a snapshot
+    -- whose count collapsed relative to the last accepted one is almost
+    -- certainly a partial capture (an idle-flush that fired during a
+    -- mid-stream pause). Keep the known-good prior instead of clobbering it.
+    -- First-ever refreshes have no prior and so always land — that's the
+    -- new-character case the old fixed >=100 floor wrongly rejected.
+    if prev and skills_parser.is_partial_regression(
+         snapshot.skill_count, prev.skill_count, SKILLS_MIN_COMPLETE_FRACTION) then
+      mud.note(string.format(
+        "skills-refresh: kept your previous skills — this capture looked "
+        .. "partial (%d skills vs %d last time, likely an interrupted dump). "
+        .. "Re-run /skills-refresh to try again.",
+        snapshot.skill_count, prev.skill_count))
+      return
+    end
     -- Stamp the fetch time so /goals can show how stale the data is. Extra
     -- field is inert to diff_skills (it walks .level/.bonus) and to consumers
     -- of the emitted event.

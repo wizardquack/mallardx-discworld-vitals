@@ -115,6 +115,20 @@ function M.line_has_cells(line)
   return false
 end
 
+-- Completeness heuristic used by the caller's flush hook. Skill counts on
+-- Discworld only ever grow — you don't un-learn skills — so a fresh snapshot
+-- whose count fell well below the last accepted one is almost always a
+-- premature idle-flush that captured an *interrupted* `skills raw` dump, not a
+-- genuine shrink. Returns true when `new_count` looks like such a partial
+-- relative to `prev_count`. `fraction` is the tolerated floor (e.g. 0.75 →
+-- "flag anything under 75% of last time"). A nil/zero `prev_count` (a
+-- first-ever refresh) is never a regression — there's no known-good data to
+-- protect, so any complete-looking capture, however small, should land.
+function M.is_partial_regression(new_count, prev_count, fraction)
+  if not prev_count or prev_count <= 0 then return false end
+  return new_count < prev_count * fraction
+end
+
 -- Build a snapshot from a list of buffered raw lines. Splits each line into
 -- cells, reads cells column-major (all col-1 cells in order, then col-2,
 -- etc.) — that reassembles the depth-first walk that the renderer flattened
