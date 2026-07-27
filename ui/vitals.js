@@ -156,8 +156,11 @@ function renderShield(key, shield) {
   const el = chipEls[key];
   if (!el) return;
   const s = (shield && shield.state) || "unknown";
-  el.classList.remove("up", "down", "unknown");
-  el.classList.add(s);
+  // 2-state chip vocabulary shared with discworld-grouping: the chip is
+  // either "up" (green) or off (dim). down / unknown both render as off; the
+  // exact status still shows in the tooltip's Status row below.
+  el.classList.remove("up");
+  if (s === "up") el.classList.add("up");
   const detail = (shield && shield.detail) ? shield.detail : "";
   const rows = [
     { label: "Status", value: SHIELD_STATE_LABEL[s], valueColor: SHIELD_STATE_COLOR[s] },

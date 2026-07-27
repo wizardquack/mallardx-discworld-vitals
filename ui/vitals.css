@@ -19,15 +19,14 @@
   --gp-fill:       var(--link,     #60a5fa);
   --burden-fill:   var(--error-fg, #ef4444);
 
-  --chip-up-bg:         color-mix(in srgb, var(--ansi-10,  #4ade80) 18%, transparent);
-  --chip-up-border:     color-mix(in srgb, var(--ansi-10,  #4ade80) 45%, transparent);
-  --chip-up-fg:         var(--fg, #e8e8e8);
-  --chip-down-bg:       color-mix(in srgb, var(--error-fg, #ef4444) 18%, transparent);
-  --chip-down-border:   color-mix(in srgb, var(--error-fg, #ef4444) 45%, transparent);
-  --chip-down-fg:       var(--error-fg, #fca5a5);
-  --chip-unknown-bg:    transparent;
-  --chip-unknown-border: var(--border, #333);
-  --chip-unknown-fg:    var(--fg-muted, #555);
+  /* Shared 2-state chip vocabulary with discworld-grouping: "up" (green
+     tint) or "off" (neutral outline). down / unknown collapse to off. */
+  --chip-up-bg:      color-mix(in srgb, var(--ansi-10, #4ade80) 18%, transparent);
+  --chip-up-border:  color-mix(in srgb, var(--ansi-10, #4ade80) 45%, transparent);
+  --chip-up-fg:      var(--fg, #e8e8e8);
+  --chip-off-bg:     transparent;
+  --chip-off-border: var(--border, #333);
+  --chip-off-fg:     var(--fg-muted, #555);
 }
 
 html, body {
@@ -142,9 +141,9 @@ html, body {
 .chip {
   flex: 1 1 0;
   height: 24px;
-  border: 1px solid var(--chip-unknown-border);
-  background: var(--chip-unknown-bg);
-  color: var(--chip-unknown-fg);
+  border: 1px solid var(--chip-off-border);
+  background: var(--chip-off-bg);
+  color: var(--chip-off-fg);
   border-radius: 4px;
   display: flex;
   align-items: center;
@@ -158,12 +157,6 @@ html, body {
   border-color: var(--chip-up-border);
   color: var(--chip-up-fg);
 }
-.chip.down {
-  background: var(--chip-down-bg);
-  border-color: var(--chip-down-border);
-  color: var(--chip-down-fg);
-}
-.chip.unknown { border-style: dashed; }
 
 /* ----- HP / GP / Burden bars ----- */
 .bars-block {
