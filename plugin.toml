@@ -1,6 +1,6 @@
 id = "net.mallard.discworld-vitals"
 name = "Discworld Vitals"
-version = "0.11.0"
+version = "0.11.1"
 description = "A vitals panel for Discworld - XP, XP rate, shields, HP, GP, burden - and a `skills raw` parser for sharing skill state with other plugins"
 language = "lua"
 entry = "src/main.lua"
