@@ -24,12 +24,12 @@ match = ["discworld.starturtle.net:*"]
 
 [gmcp]
 advertise = [
-  "char.login",
-  "char.info",
-  "char.vitals",
-  "room.info",
-  "room.map",
-  "comm.channel",
+  "char.login 1",
+  "char.info 1",
+  "char.vitals 1",
+  "room.info 1",
+  "room.map 1",
+  "comm.channel 1",
 ]
 
 [panels.vitals]
