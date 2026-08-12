@@ -72,10 +72,19 @@ function M.make(bucket_seconds, max_buckets)
     last_bucket = (type(saved_baseline) == "number") and saved_baseline or nil
   end
 
+  -- Wipe the rolling window back to a fresh-construction state: no deltas and
+  -- no baseline. rate() then reports nil until the next tick re-seeds the
+  -- baseline against the current XP, so the reported per-hour figure starts
+  -- accumulating from zero again rather than carrying old buckets forward.
+  local function reset()
+    restore(nil, nil)
+  end
+
   return {
     tick     = tick,
     rate     = compute_rate,
     restore  = restore,
+    reset    = reset,
     deltas   = function() return deltas end,
     baseline = function() return last_bucket end,
   }

@@ -543,7 +543,12 @@ events.on("net.mallard.discworld.shield.down", function(data)
   if type(data) ~= "table" or data.subject ~= "self" or data.type ~= "tpa" then return end
   local hits     = data.hits             or 0
   local duration = data.duration_seconds or nil
-  if hits > 0 and duration then
+  if data.silent then
+    -- No break was seen on the wire — magic inferred the drop by diffing a
+    -- `shields` report against its own state (TPA expiry is silent on
+    -- Discworld). Reporting "Broken" here would be a claim we can't make.
+    tpa_down_summary = "Lapsed"
+  elseif hits > 0 and duration then
     tpa_down_summary = string.format("Broken · %d %s · %s",
       hits, (hits == 1) and "hit" or "hits", format_duration(duration))
   elseif duration then
