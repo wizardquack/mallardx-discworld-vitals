@@ -10,7 +10,9 @@
 -- read as a desired BONUS it answers "what level reaches it", read as a
 -- desired LEVEL it answers "what bonus does it give" — so the user never has
 -- to disambiguate which they meant. Each reading flags when the current skill
--- already satisfies it.
+-- already satisfies it, and — when it doesn't — prices the climb with the same
+-- optimal-teacher / self-teach pair the goal planner headlines with, so a
+-- target inspected here and then turned into a goal quotes the same numbers.
 --
 -- This mirrors the policy in src/forecast.lua: an empirical M backed out of an
 -- observed (level, bonus) is exact and preferred; the stat-table M is the
@@ -20,6 +22,8 @@
 -- tests/skill_query_test.lua.
 
 local bonus      = require("bonus")
+local forecast   = require("forecast")
+local planner    = require("planner")
 local skill_data = require("skill_data")
 
 local M = {}
@@ -71,8 +75,10 @@ end
 --   target = {                          -- present only when a number was given
 --     value,
 --     no_mult = true,                   -- ...when M couldn't be resolved
---     as_bonus = { value, level_needed, bonus_at_level, already, extra_levels },
---     as_level = { value, bonus_reached, already, extra_bonus },
+--     as_bonus = { value, level_needed, bonus_at_level, already, extra_levels,
+--                  cost = { optimal, self } },
+--     as_level = { value, bonus_reached, already, extra_bonus,
+--                  cost = { optimal, self } },
 --   },
 -- }
 -- ---------------------------------------------------------------------
@@ -136,6 +142,23 @@ function M.describe(opts)
     already       = level >= t,
   }
   if bonus_reached and cur_bonus then as_level.extra_bonus = bonus_reached - cur_bonus end
+
+  -- What it would cost to actually get there. Only the readings you haven't
+  -- already met are priced — they're the ones worth acting on. Guild
+  -- advancement isn't offered (we have no guild→primary map yet), matching
+  -- the planner's behaviour for the same skill.
+  local function cost_to(to_level)
+    if type(to_level) ~= "number" or to_level <= level then return nil end
+    local out = {}
+    for _, sc in ipairs(planner.scenarios_for(false)) do
+      local ct = forecast.cost_to_target(mult, level, to_level, sc.methods)
+      if ct and ct.reachable then out[sc.key] = ct.total_xp end
+    end
+    if out.optimal or out.self then return out end
+    return nil
+  end
+  if not as_bonus.already then as_bonus.cost = cost_to(level_needed) end
+  if not as_level.already then as_level.cost = cost_to(t) end
 
   info.target = { value = t, as_bonus = as_bonus, as_level = as_level }
   return info

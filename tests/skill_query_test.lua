@@ -4,6 +4,8 @@
 package.path = "./src/?.lua;" .. package.path
 local skill_query = require("skill_query")
 local bonus       = require("bonus")
+local forecast    = require("forecast")
+local planner     = require("planner")
 local skill_data  = require("skill_data")
 
 local passed = 0
@@ -133,6 +135,60 @@ test("describe target truncates a fractional value", function()
     path = "fighting.melee.sword", level = 100, bonus = 190, stats = STATS,
     target = 260.9 })
   eq(info.target.value, 260, "floored target")
+end)
+
+-- ---------------------------------------------------------------------
+-- Target cost — each unmet reading is priced optimal / self, matching what
+-- the goal planner would quote for the same climb.
+-- ---------------------------------------------------------------------
+test("describe prices both target readings", function()
+  local info = skill_query.describe({
+    path = "fighting.melee.sword", level = 100, bonus = 190, stats = STATS,
+    target = 260 })
+  local ab, al = info.target.as_bonus, info.target.as_level
+
+  assert(ab.cost and ab.cost.optimal and ab.cost.self, "bonus reading priced")
+  assert(al.cost and al.cost.optimal and al.cost.self, "level reading priced")
+  -- Self-teach is the floor-price fallback: never cheaper than the optimal
+  -- scenario, which may also use a teacher.
+  assert(ab.cost.self >= ab.cost.optimal, "self costs at least optimal (bonus)")
+  assert(al.cost.self >= al.cost.optimal, "self costs at least optimal (level)")
+  -- Here bonus 260 lands below level 260, so it's the shorter, cheaper climb
+  -- — the two readings are priced independently, not shared.
+  assert(ab.level_needed < 260, "bonus reading is the shorter climb")
+  assert(ab.cost.optimal < al.cost.optimal, "shorter climb costs less")
+end)
+
+test("target cost matches forecast over the planner's scenarios", function()
+  local info = skill_query.describe({
+    path = "fighting.melee.sword", level = 100, bonus = 190, stats = STATS,
+    target = 260 })
+  local scenarios = planner.scenarios_for(false)
+  for _, sc in ipairs(scenarios) do
+    local want = forecast.cost_to_target(info.mult, 100,
+      info.target.as_bonus.level_needed, sc.methods)
+    eq(info.target.as_bonus.cost[sc.key], want.total_xp, "cost for " .. sc.key)
+  end
+end)
+
+test("an already-reached reading isn't priced", function()
+  local info = skill_query.describe({
+    path = "fighting.melee.sword", level = 300, bonus = 290, stats = STATS,
+    target = 150 })
+  eq(info.target.as_bonus.cost, nil, "no cost for a met bonus")
+  eq(info.target.as_level.cost, nil, "no cost for a met level")
+end)
+
+test("a bonus met but level not still prices the level reading", function()
+  -- Bonus 290 already clears target 250, but level 300 is above level 250 too
+  -- — so pick a target level above the current level with a met bonus.
+  local info = skill_query.describe({
+    path = "fighting.melee.sword", level = 200, bonus = 290, stats = STATS,
+    target = 250 })
+  eq(info.target.as_bonus.already, true, "bonus 250 already reached")
+  eq(info.target.as_bonus.cost, nil, "met bonus not priced")
+  eq(info.target.as_level.already, false, "level 250 not reached")
+  assert(info.target.as_level.cost.optimal > 0, "unmet level priced")
 end)
 
 print(string.format("\n%d skill_query tests passed.", passed))

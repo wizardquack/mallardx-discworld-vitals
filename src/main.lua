@@ -1720,7 +1720,22 @@ local function show_skill(charname, query, target)
       local w_delta = math.max(#delta_str(ab.extra_levels), #delta_str(al.extra_bonus))
       local w_unit  = math.max(#"levels", #"bonus")
 
-      local function corresponds(kind_word, opp_word, num, delta_n, unit, goal_kind, already)
+      -- What the climb costs, in the same optimal / (self) pair /goals
+      -- headlines with — so a target priced here reads identically once it
+      -- becomes a goal. Both cells are right-justified into shared columns so
+      -- the two readings stack.
+      local function xp_cell(n)
+        return (type(n) == "number") and ("~" .. format_xp_short(n) .. " xp") or nil
+      end
+      local function widest(a, b) return math.max(#(a or ""), #(b or "")) end
+      local ab_opt,  al_opt  = xp_cell(ab.cost and ab.cost.optimal),
+                               xp_cell(al.cost and al.cost.optimal)
+      local ab_self, al_self = xp_cell(ab.cost and ab.cost.self),
+                               xp_cell(al.cost and al.cost.self)
+      local w_opt, w_self = widest(ab_opt, al_opt), widest(ab_self, al_self)
+
+      local function corresponds(kind_word, opp_word, num, delta_n, unit, goal_kind,
+                                 already, opt_xp, self_xp)
         local numstr = tostring(num)
         local paren  = string.format("(%" .. w_delta .. "s %-" .. w_unit .. "s)",
           delta_str(delta_n), unit)
@@ -1733,8 +1748,17 @@ local function show_skill(charname, query, target)
           -- you've already passed (−) stays muted.
           sp(paren, delta_n > 0 and GP.afford or muted),
         }
+        if opt_xp then
+          out[#out + 1] = sp("  " .. string.rep(" ", w_opt - #opt_xp))
+          out[#out + 1] = sp(opt_xp, GP.optimal)
+        end
+        if self_xp then
+          out[#out + 1] = sp("  (self " .. string.rep(" ", w_self - #self_xp), muted)
+          out[#out + 1] = sp(self_xp, GP.selfc)
+          out[#out + 1] = sp(")", muted)
+        end
         if not already then
-          out[#out + 1] = sp("   ")
+          out[#out + 1] = sp("  ")
           out[#out + 1] = sp("add goal", {
             fg = "cyan", underline = true,
             on_click = function() upsert_goal(charname, path, goal_kind, t.value) end,
@@ -1743,8 +1767,10 @@ local function show_skill(charname, query, target)
         mud.note(table.unpack(out))
       end
 
-      corresponds("bonus", "level", ab.level_needed,  ab.extra_levels, "levels", "bonus", ab.already)
-      corresponds("level", "bonus", al.bonus_reached, al.extra_bonus,  "bonus",  "level", al.already)
+      corresponds("bonus", "level", ab.level_needed,  ab.extra_levels, "levels", "bonus",
+        ab.already, ab_opt, ab_self)
+      corresponds("level", "bonus", al.bonus_reached, al.extra_bonus,  "bonus",  "level",
+        al.already, al_opt, al_self)
     end
   end
 
