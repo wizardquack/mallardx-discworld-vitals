@@ -185,6 +185,33 @@ local function push_gp_optimistic()
   if v and m then set_gp(v, m) end
 end
 
+-- Optional loss-announcement feature, the GP counterpart to
+-- announce_xp_gain. The baseline is the tracker's *optimistic* value (last
+-- authoritative reading plus regen ticks since), so the regen earned between
+-- readings doesn't shrink the reported cost of a cast. The trade-off: if the
+-- regen setting overshoots the real rate, small phantom losses can appear —
+-- the threshold absorbs those. Nil baseline (no reading yet) never announces.
+local function announce_gp_loss(new_gp)
+  local prev = gp.current()
+  if prev == nil or not settings.get("show_gp_losses") then return end
+  local loss      = prev - new_gp
+  local threshold = to_num(settings.get("gp_loss_threshold")) or 0
+  if loss >= threshold and loss > 0 then
+    mud.note("{gp: -" .. format_thousands(loss) .. "}")
+  end
+end
+
+-- Every authoritative GP source (GMCP char.vitals, MXP entities, the
+-- score-brief prompt trigger) funnels through here: announce any loss
+-- against the optimistic value, then reconcile the tracker and repaint.
+-- The gp.zero contemplation event deliberately bypasses this — that drop
+-- isn't a spend and shouldn't be announced.
+local function set_gp_authoritative(v, m)
+  announce_gp_loss(v)
+  gp.set(v, m)
+  push_gp_optimistic()
+end
+
 local function set_burden(b)
   if b then state.burden = b; push_state() end
 end
@@ -198,9 +225,9 @@ end
 local hydrate_xp_state
 
 -- ---------------------------------------------------------------------
--- Live settings updates. Three of our five settings (show_xp_gains,
--- xp_gain_threshold, gp_full_sound) are read inline at point-of-use, so
--- they auto-apply without any wiring here. The remaining two are cached
+-- Live settings updates. Five of our seven settings (show_xp_gains,
+-- xp_gain_threshold, show_gp_losses, gp_loss_threshold, gp_full_sound) are
+-- read inline at point-of-use, so they auto-apply without any wiring here. The remaining two are cached
 -- at startup and need a handler to re-apply on change. With every setting
 -- handled in-place, `mud.request_restart()` is never called — settings
 -- changes never restart the VM, preserving the XP tracker buffer + the
@@ -229,11 +256,7 @@ gmcp.on("char.vitals", function(_pkg, data)
   local burden      = to_num(data.burden)
   local xp          = to_num(data.xp)
   if hp and maxhp then state.hp = { value = hp, max = maxhp } end
-  if gpv and maxgp then
-    gp.set(gpv, maxgp)
-    local v, m = gp.current()
-    if v and m then set_gp(v, m) end
-  end
+  if gpv and maxgp then set_gp_authoritative(gpv, maxgp) end
   if burden then state.burden = burden end
   if xp then
     state.xp = format_thousands(xp)
@@ -273,10 +296,7 @@ end
 local function refresh_gp_from_mxp()
   local v = to_num(mxp.get_entity("gp"))
   local m = to_num(mxp.get_entity("maxgp"))
-  if v and m then
-    gp.set(v, m)
-    push_gp_optimistic()
-  end
+  if v and m then set_gp_authoritative(v, m) end
 end
 
 mxp.on_entity("hp",    refresh_hp)
@@ -578,11 +598,7 @@ mud.trigger(
     if hp and maxhp then
       state.hp = { value = hp, max = maxhp }
     end
-    if gpv and maxgp then
-      gp.set(gpv, maxgp)
-      local v, mx = gp.current()
-      if v and mx then set_gp(v, mx) end
-    end
+    if gpv and maxgp then set_gp_authoritative(gpv, maxgp) end
     -- Quow's logic (QuowMinimap.xml:13783-13791): only update xp+burden
     -- when the burden capture is non-empty. Lines without a burden field
     -- are combat-monitor lines, not regular vitals — updating xp from

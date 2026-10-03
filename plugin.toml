@@ -66,6 +66,20 @@ max = 1000000
 label = "XP gain threshold"
 description = "Minimum XP delta required to print a gain note."
 
+[settings.show_gp_losses]
+type = "bool"
+default = false
+label = "Announce GP losses"
+description = "Print a note to the game output each time GP drops by at least the threshold below."
+
+[settings.gp_loss_threshold]
+type = "number"
+default = 10
+min = 1
+max = 100000
+label = "GP loss threshold"
+description = "Minimum GP drop required to print a loss note."
+
 [settings.gp_full_sound]
 type = "bool"
 default = false
