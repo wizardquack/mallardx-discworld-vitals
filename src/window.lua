@@ -1,4 +1,4 @@
--- Time-window parsing for /tm. Copied verbatim from the sibling
+-- Time-window parsing for /skill-history. Copied verbatim from the sibling
 -- mallardx-discworld-teaching plugin (src/window.lua) so both plugins accept
 -- exactly the same lookback grammar — keep the two in sync.
 --

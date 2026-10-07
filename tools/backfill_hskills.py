@@ -3,8 +3,8 @@
 
 The plugin only records `hskills` output it sees while loaded. This walks a
 character's Mallard log archive and writes every `hskills` line it finds into
-the plugin's per-world database, so /tm and /skill start with the full
-history instead of from today.
+the plugin's per-world database, so /skill-history and /skill start with the
+full history instead of from today.
 
 Safe to re-run: rows go in with INSERT OR IGNORE against the same natural key
 the plugin uses (char, skill, to_level, server_time), so a second pass — or

@@ -137,8 +137,9 @@ function M.load(char, opts)
   return increases or {}, refreshes or {}
 end
 
--- Distinct skill names with exact history for `char` — lets /tm resolve
--- skills that never appear in `skills raw` (languages: "spoken Dwarfish").
+-- Distinct skill names with exact history for `char` — lets /skill-history
+-- resolve skills that never appear in `skills raw` (languages: "spoken
+-- Dwarfish").
 function M.skills(char)
   local out = {}
   for _, r in ipairs(db.query(

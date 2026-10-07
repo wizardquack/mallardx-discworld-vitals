@@ -19,9 +19,10 @@ license = "MIT"
 gmcp_access = ["char.vitals", "char.info", "char.info.*"]
 # Required for /skills-refresh, which sends `skills raw` to drive the parser.
 sends = true
-# Skill increase history (/tm, /skill's history section): an append-only log
-# of `hskills` lines and refresh diffs, read back over arbitrary time windows —
-# indexed SQL rather than an ever-growing storage blob.
+# Skill increase history (/skill-history, /skill's history section): an
+# append-only log of `hskills` lines and refresh diffs, read back over
+# arbitrary time windows — indexed SQL rather than an ever-growing storage
+# blob.
 database = true
 
 [worlds]

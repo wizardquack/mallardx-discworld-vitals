@@ -18,9 +18,9 @@ teaching alike. Whenever you type `hskills` in game, every line it prints
 is recorded with its exact time. Increases `hskills` never showed (a
 session that ended before you typed it) are inferred from what changed
 between /skills-refresh runs and dated as a range ("Oct 2–4"). Browse it
-with /tm (last week, every skill), /tm all, /tm &lt;skill&gt;, or a whole
-branch like /tm fi.ra, with windows like 3d, 2w, 6m, today or all; /skill
-also lists a skill's ten most recent increases. Existing logs can be
+with /skill-history (or /sh; last week, every skill), /skill-history all,
+/skill-history &lt;skill&gt;, or a whole branch like /skill-history fi.ra,
+with windows like 3d, 2w, 6m, today or all; /skill also lists a skill's ten most recent increases. Existing logs can be
 backfilled once with `tools/backfill_hskills.py`.
 
 ## A note on cross-plugin events
