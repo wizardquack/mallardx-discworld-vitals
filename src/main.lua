@@ -16,6 +16,7 @@ local planner       = require("planner")
 local skill_data    = require("skill_data")
 local skill_query   = require("skill_query")
 local panel_push    = require("panel_push")
+local announce      = require("announce")
 
 local panel = mud.panel("vitals")
 
@@ -75,6 +76,15 @@ local function format_thousands(n)
   return (rev:gsub("^,", ""))
 end
 
+-- Signed delta for the `{…}` announcement lines: thousands-separated
+-- magnitude with a leading "-" when negative (format_thousands' reverse-gsub
+-- walk can't carry the sign itself). Gains take no "+" — "{xp: 3,728}" reads
+-- better than "{xp: +3,728}".
+local function format_signed(n)
+  if type(n) ~= "number" then return tostring(n) end
+  return (n < 0 and "-" or "") .. format_thousands(math.abs(n))
+end
+
 -- Comma-tolerant numeric coercion. Wire sources are inconsistent about
 -- thousands separators: GMCP usually delivers raw numbers, MXP entities and
 -- score-brief captures are strings, and user-entered settings may include
@@ -119,6 +129,30 @@ local XP_BUCKET_SECONDS   = 60
 local tracker        = xp_tracker.make(XP_BUCKET_SECONDS, XP_CHART_MAX_POINTS)
 local gp             = gp_tracker.make(gp_regen)
 
+-- Every `{…}` delta note the plugin prints goes through this batcher rather
+-- than straight to mud.note, so an update carrying both a GP loss and an XP
+-- gain prints one "{gp: -106, xp: 3,728}" line instead of two. The deltas are
+-- detected in separate handlers (and reach us as separate MXP entity
+-- callbacks) even when the game sent them together, so there's no single
+-- handler to collect them in — the flush is deferred instead. See
+-- src/announce.lua.
+local announcer = announce.make{
+  emit   = mud.note,
+  format = format_signed,
+  schedule = function(fn)
+    -- `mud.delay(0, …)` fires on the host's next scheduler pass (100ms
+    -- cadence), by which point every handler for the current update has run.
+    -- The handle is removed from inside the callback: a fired one-shot frees
+    -- its scheduler entry but NOT its Lua callback-registry slot, and that
+    -- registry is capped per runtime — `:remove()` is what releases it.
+    local handle
+    handle = mud.delay(0, function()
+      fn()
+      if handle then handle:remove() end
+    end)
+  end,
+}
+
 -- Last raw XP value seen, used to compute the per-update delta for the
 -- optional gain-announcement feature. Nil until the first sample arrives —
 -- we don't announce on the initial reading.
@@ -131,7 +165,7 @@ local function announce_xp_gain(raw_xp)
     local gain      = n - last_xp
     local threshold = to_num(settings.get("xp_gain_threshold")) or 0
     if gain >= threshold and gain > 0 then
-      mud.note("{xp: " .. format_thousands(gain) .. "}")
+      announcer.add("xp", gain)
     end
   end
   last_xp = n
@@ -197,7 +231,7 @@ local function announce_gp_loss(new_gp)
   local loss      = prev - new_gp
   local threshold = to_num(settings.get("gp_loss_threshold")) or 0
   if loss >= threshold and loss > 0 then
-    mud.note("{gp: -" .. format_thousands(loss) .. "}")
+    announcer.add("gp", -loss)
   end
 end
 
