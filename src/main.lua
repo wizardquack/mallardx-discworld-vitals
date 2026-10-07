@@ -1828,17 +1828,13 @@ local function history_help()
   local function line(cmd, desc)
     mud.note(sp(string.format("  %-34s", cmd), GP.cmd), sp(desc))
   end
-  mud.note(sp("skill-history (or /sh) — skill increases (TMs, advances, teaching) "
+  mud.note(sp("skill-history (or /sh) — skill increases (TMs and learns) "
     .. "over a time window:", GP.label))
   line(p .. "skill-history",                "every skill, last week")
   line(p .. "skill-history all",            "every skill, all time")
   line(p .. "skill-history <skill>",        "one skill — or a whole branch, e.g. fi.ra")
   line(p .. "skill-history <skill> <window>", "windows: 1d 3d 2w 6m 1y today yesterday all")
   line(p .. "skill-history ... full",       "list every row, not just the first " .. HISTORY_LIST_LIMIT)
-  mud.note(sp("  exact times come from the game's "), sp("hskills", GP.cmd),
-    sp(" — type it before logging out; anything it never showed is inferred"))
-  mud.note(sp("  from "), sp(p .. "skills-refresh", GP.cmd),
-    sp(" diffs and dated as a range (\"Oct 2–4\")."))
 end
 
 -- Forward-declared: the "… N more" span re-enters show_history with `full`.
