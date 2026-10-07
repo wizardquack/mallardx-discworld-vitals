@@ -17,6 +17,9 @@ local skill_data    = require("skill_data")
 local skill_query   = require("skill_query")
 local panel_push    = require("panel_push")
 local announce      = require("announce")
+local skill_history = require("skill_history")
+local history_store = require("history_store")
+local window        = require("window")
 
 local panel = mud.panel("vitals")
 
@@ -737,6 +740,33 @@ local function print_skills_diff(charname, changes)
   end
 end
 
+-- ---------------------------------------------------------------------
+-- Skill increase history storage (SQLite). Needs the host `db` API
+-- (Mallard >= 0.25); without it every history feature degrades to a
+-- one-line explanation rather than an error. Pure logic lives in
+-- src/skill_history.lua, persistence in src/history_store.lua.
+-- ---------------------------------------------------------------------
+
+local history_ok = false
+if type(db) == "table" then
+  local ok, err = pcall(history_store.migrate)
+  history_ok = ok
+  if not ok then
+    mud.note("discworld-vitals: skill history unavailable — " .. tostring(err))
+  end
+end
+
+local function record_refresh_history(charname, prev, snapshot)
+  if not history_ok then return end
+  local changes = skill_history.changes_from_diff(prev, snapshot)
+  local prev_ts = type(prev.saved_at) == "number" and prev.saved_at or nil
+  local ok, err = pcall(history_store.add_refresh, charname, snapshot.saved_at,
+    prev_ts, changes)
+  if not ok then
+    mud.note("skill history: couldn't record refresh — " .. tostring(err))
+  end
+end
+
 -- Forward-declared so on_state_change (below) can reach the on-demand
 -- idle/arm watchdog; the watchdog itself is defined just after this make().
 local ensure_skills_poll, stop_skills_poll
@@ -779,6 +809,13 @@ local skills_sm = skills_parser.make({
     -- field is inert to diff_skills (it walks .level/.bonus) and to consumers
     -- of the emitted event.
     snapshot.saved_at = now_seconds()
+    -- Skill history: persist which levels rose since the previous refresh,
+    -- so /tm and /skill can infer increases `hskills` never showed. The
+    -- previous snapshot is about to be overwritten, so this is the only
+    -- moment the diff can be taken.
+    if prev then
+      record_refresh_history(charname, prev, snapshot)
+    end
     storage.set("skills/" .. charname, snapshot)
     storage.set("skills/_last_active", charname)
     events.emit("net.mallard.discworld.skills.updated", {
@@ -1224,9 +1261,11 @@ end
 -- Resolve a user-typed skill query, printing a helpful message and returning
 -- nil if it can't be pinned to exactly one skill. `label` prefixes the
 -- diagnostics (e.g. "goal" / "skill") so each command speaks in its own voice.
-local function resolve_skill_arg(charname, query, label)
+local function resolve_skill_arg(charname, query, label, extra_paths)
   label = label or "goal"
-  local path, candidates = planner.resolve_skill(query, known_skill_paths(charname))
+  local paths = known_skill_paths(charname)
+  for _, p in ipairs(extra_paths or {}) do paths[#paths + 1] = p end
+  local path, candidates = planner.resolve_skill(query, paths)
   if path then return path end
   if #candidates == 0 then
     mud.note(sp(label .. ": no skill matches '" .. query .. "'.", GP.err))
@@ -1679,6 +1718,307 @@ panel:on_message("show_goals", function()
 end)
 
 -- ---------------------------------------------------------------------
+-- Skill increase history — rendering shared by /tm (any skill or branch,
+-- any window) and /skill's "history" section (one skill, all time, capped).
+-- Rows come from skill_history.reconstruct: exact `hskills` increases plus
+-- the inferred residue of /skills-refresh diffs. Inferred rows carry an
+-- adaptive-coarseness date ("Oct 2–4") in muted text so a vague time never
+-- reads as precise.
+-- ---------------------------------------------------------------------
+
+local HISTORY_SKILL_ROWS = 10   -- /skill's history section
+local TM_LIST_LIMIT      = 25   -- /tm rows before "full"
+
+local function history_unavailable(label)
+  mud.note(sp(label .. ": skill history needs Mallard 0.25 or newer "
+    .. "(SQLite plugin storage).", GP.err))
+end
+
+-- Reconstructed rows for `charname`, newest first, filtered to `win` (nil =
+-- all time). `opts` is history_store.load's { exact = path } | { under = path }.
+local function load_history_rows(charname, opts, win)
+  local ok, incs, refs = pcall(history_store.load, charname, opts)
+  if not ok then
+    mud.note(sp("skill history: " .. tostring(incs), GP.err))
+    return nil
+  end
+  local out = {}
+  for _, r in ipairs(skill_history.reconstruct(incs, refs)) do
+    if skill_history.in_window(r, win) then out[#out + 1] = r end
+  end
+  return out
+end
+
+-- Skill column label: the game-style abbreviation for dotted paths; language
+-- skills ("spoken Dwarfish") and top-level names as-is.
+local function history_skill_label(skill)
+  if skill:find(" ", 1, true) or not skill:find(".", 1, true) then return skill end
+  return skill_data.abbreviate(skill)
+end
+
+-- One "from→to (+d)" reading split into pieces so a column of them aligns:
+-- from, to and the signed delta are each padded to the column's widest.
+local function span_parts(from, to)
+  if from == nil or to == nil then
+    return from ~= nil and tostring(from) or "?", to ~= nil and tostring(to) or "?", nil, nil
+  end
+  local d = to - from
+  return tostring(from), tostring(to),
+    string.format("%s%d", d >= 0 and "+" or "-", math.abs(d)), d
+end
+
+local function lpad(s, n) return string.rep(" ", n - disp_width(s)) .. s end
+local function rpad(s, n) return s .. string.rep(" ", n - disp_width(s)) end
+
+-- Print history rows as an aligned table.
+--   opts.show_skill  include the skill column (multi-skill listings)
+--   opts.labels      prefix the readings with muted "level" / "bonus" words
+--   opts.indent      leading whitespace (default two spaces)
+local function print_history_rows(rows, opts)
+  opts = opts or {}
+  local muted  = { fg = "light black" }
+  local indent = opts.indent or "  "
+  local now    = now_seconds()
+  local w = { when = 0, skill = 0, lf = 0, lt = 0, ld = 0, bf = 0, bt = 0, bd = 0 }
+  local cells = {}
+  for _, r in ipairs(rows) do
+    local c = { row = r, when = skill_history.when_label(r, now),
+                skill = history_skill_label(r.skill) }
+    c.lf, c.lt, c.ld, c.ln = span_parts(r.from_level, r.to_level)
+    if r.from_bonus ~= nil or r.to_bonus ~= nil then
+      c.bf, c.bt, c.bd, c.bn = span_parts(r.from_bonus, r.to_bonus)
+    end
+    for k in pairs(w) do
+      if c[k] and disp_width(c[k]) > w[k] then w[k] = disp_width(c[k]) end
+    end
+    cells[#cells + 1] = c
+  end
+
+  -- "(+1)" for a rise is the family's green "afford" idiom; +0 stays muted.
+  local function reading(out, f, t, d, n, wf, wt, wd)
+    out[#out + 1] = sp(lpad(f, wf) .. "→" .. lpad(t, wt))
+    if d then
+      out[#out + 1] = sp(" (" .. lpad(d, wd) .. ")", (n or 0) > 0 and GP.afford or muted)
+    elseif wd > 0 then
+      out[#out + 1] = sp(string.rep(" ", wd + 3))
+    end
+  end
+
+  for _, c in ipairs(cells) do
+    local out = {
+      sp(indent),
+      sp(rpad(c.when, w.when), c.row.inferred and muted or nil),
+    }
+    if opts.show_skill then
+      out[#out + 1] = sp("  ")
+      out[#out + 1] = sp(rpad(c.skill, w.skill), GP.skill)
+    end
+    out[#out + 1] = sp(opts.labels and "  level " or "  ", muted)
+    reading(out, c.lf, c.lt, c.ld, c.ln, w.lf, w.lt, w.ld)
+    if c.bf then
+      out[#out + 1] = sp(opts.labels and "  ·  bonus " or "  ", muted)
+      reading(out, c.bf, c.bt, c.bd, c.bn, w.bf, w.bt, w.bd)
+    end
+    mud.note(table.unpack(out))
+  end
+end
+
+local function tm_help()
+  local p = pfx()
+  local function line(cmd, desc)
+    mud.note(sp(string.format("  %-34s", cmd), GP.cmd), sp(desc))
+  end
+  mud.note(sp("tm — skill increases (TMs, advances, teaching) over a time window:", GP.label))
+  line(p .. "tm",                     "every skill, last week")
+  line(p .. "tm all",                 "every skill, all time")
+  line(p .. "tm <skill>",             "one skill — or a whole branch, e.g. fi.ra")
+  line(p .. "tm <skill> <window>",    "windows: 1d 3d 2w 6m 1y today yesterday all")
+  line(p .. "tm ... full",            "list every row, not just the first " .. TM_LIST_LIMIT)
+  mud.note(sp("  exact times come from the game's "), sp("hskills", GP.cmd),
+    sp(" — type it before logging out; anything it never showed is inferred"))
+  mud.note(sp("  from "), sp(p .. "skills-refresh", GP.cmd),
+    sp(" diffs and dated as a range (\"Oct 2–4\")."))
+end
+
+-- Forward-declared: the "… N more" span re-enters show_tm with `full`.
+local show_tm
+show_tm = function(charname, query, spec, full)
+  if not history_ok then history_unavailable("tm") return end
+  local muted = { fg = "light black" }
+  local win, err = window.parse(spec)
+  if not win then
+    mud.note(sp("tm: " .. err .. ". Windows look like 1d, 3d, 2w, 6m, 1y, "
+      .. "today, yesterday or all.", GP.err))
+    return
+  end
+
+  -- Resolve the skill. History names are tried case-insensitively first so
+  -- skills `skills raw` never lists (languages: "spoken Dwarfish") work;
+  -- otherwise the usual abbreviation resolver, widened with those names. A
+  -- branch resolves to itself and lists its whole subtree.
+  local path
+  if query then
+    local ok, hist = pcall(history_store.skills, charname)
+    hist = ok and hist or {}
+    local low = query:lower()
+    for _, n in ipairs(hist) do
+      if n:lower() == low then path = n break end
+    end
+    if not path then
+      path = resolve_skill_arg(charname, query, "tm", hist)
+      if not path then return end
+    end
+  end
+
+  local rows = load_history_rows(charname, path and { under = path } or {}, win)
+  if not rows then return end
+
+  local skills_seen, n_skills, levels = {}, 0, 0
+  for _, r in ipairs(rows) do
+    if not skills_seen[r.skill] then skills_seen[r.skill] = true; n_skills = n_skills + 1 end
+    if r.from_level and r.to_level then levels = levels + (r.to_level - r.from_level) end
+  end
+
+  local head = { sp("skill increases", GP.label) }
+  if path then
+    head[#head + 1] = sp(": ", GP.label)
+    head[#head + 1] = sp(path, { fg = "cyan", bold = true })
+  end
+  head[#head + 1] = sp(" — " .. win.label, GP.label)
+  if #rows > 0 then
+    head[#head + 1] = sp(string.format("  (%d increase%s · +%d level%s%s)",
+      #rows, #rows == 1 and "" or "s", levels, levels == 1 and "" or "s",
+      n_skills > 1 and string.format(" · %d skills", n_skills) or ""), muted)
+  end
+  mud.note(table.unpack(head))
+
+  local cmd_query = query and (" " .. query) or ""
+  if #rows == 0 then
+    mud.note(sp("  No skill increases recorded " .. win.phrase .. ".", muted))
+    if win.spec ~= "all" then
+      mud.note(sp("  Try a wider window, e.g. ", muted),
+        sp(pfx() .. "tm" .. cmd_query .. " all", {
+          fg = "light cyan", bold = true, underline = true,
+          on_click = function() show_tm(charname, query, "all", full) end,
+        }))
+    else
+      mud.note(sp("  Type ", muted), sp("hskills", GP.cmd),
+        sp(" in game to record this session's increases.", muted))
+    end
+    return
+  end
+
+  local limit = full and #rows or math.min(#rows, TM_LIST_LIMIT)
+  local shown, any_inferred = {}, false
+  for i = 1, limit do
+    shown[i] = rows[i]
+    if rows[i].inferred then any_inferred = true end
+  end
+  print_history_rows(shown, { show_skill = (path == nil) or n_skills > 1 })
+
+  if limit < #rows then
+    mud.note(sp(string.format("  … %d more — ", #rows - limit), muted),
+      sp(pfx() .. "tm" .. cmd_query .. " " .. win.spec .. " full", {
+        fg = "light cyan", bold = true, underline = true,
+        on_click = function() show_tm(charname, query, win.spec, true) end,
+      }))
+  end
+  if any_inferred then
+    mud.note(sp("  dates shown as ranges are inferred from skills refreshes — type ", muted),
+      sp("hskills", GP.cmd), sp(" before logging out for exact times", muted))
+  end
+end
+
+-- /skill's "history" section: the skill's own increases, all time, newest
+-- first, capped at HISTORY_SKILL_ROWS with a click-through to /tm for the
+-- rest. Omitted entirely when nothing is recorded.
+local function print_skill_history(charname, path)
+  if not history_ok then return end
+  local rows = load_history_rows(charname, { exact = path }, nil)
+  if not rows or #rows == 0 then return end
+  local muted = { fg = "light black" }
+  mud.note(sp("  history", muted))
+  local shown = {}
+  for i = 1, math.min(#rows, HISTORY_SKILL_ROWS) do shown[i] = rows[i] end
+  print_history_rows(shown, { labels = true, indent = "    " })
+  if #rows > HISTORY_SKILL_ROWS then
+    local abbr = history_skill_label(path)
+    mud.note(sp(string.format("    … %d more — ", #rows - HISTORY_SKILL_ROWS), muted),
+      sp(pfx() .. "tm " .. abbr .. " all", {
+        fg = "light cyan", bold = true, underline = true,
+        on_click = function() show_tm(charname, path, "all", false) end,
+      }))
+  end
+end
+
+mud.command("tm", function(m)
+  local args = ((m and m.args) or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  local low = args:lower()
+  if low == "help" or low == "?" then tm_help() return end
+  local charname = goal_charname()
+  if not charname or charname == "" then
+    mud.note(sp("tm: no character yet — log in first.", GP.err))
+    return
+  end
+  -- Same any-order scan as the teaching plugin's /teach: the first word that
+  -- looks like a window is the window, `full` is a flag, the rest is the skill.
+  local spec, full, rest = nil, false, {}
+  for word in args:gmatch("%S+") do
+    local lw = word:lower()
+    if not spec and window.looks_like_spec(lw) then
+      spec = lw
+    elseif lw == "full" then
+      full = true
+    else
+      rest[#rest + 1] = word
+    end
+  end
+  show_tm(charname, #rest > 0 and table.concat(rest, " ") or nil, spec, full)
+end, {
+  description = "Skill increases (TMs, advances, teaching) over a time window.",
+  usage = "tm [<skill|branch>] [<window>] [full] | tm help",
+})
+
+-- Passive `hskills` capture. We never send the command ourselves and never
+-- gag its output: the header opens a short window (skill_history's
+-- make_capture) inside which date-stamped skill lines are recorded, deduped
+-- by the store. One note per burst, and only when something was new — the
+-- repeats of earlier lines from the same session stay silent.
+local hskills_capture = skill_history.make_capture()
+local hskills_new, hskills_note_pending = 0, false
+
+mud.trigger(skill_history.HEADER_PATTERN, function()
+  hskills_capture.on_header(now_seconds())
+end)
+
+mud.trigger(skill_history.LINE_PATTERN, function(m)
+  if not m or not history_ok then return end
+  local rec = hskills_capture.on_line(m, now_seconds())
+  if not rec then return end
+  local charname = gmcp.get("char.info.name")
+  if type(charname) ~= "string" or charname == "" then return end
+  local ok, added = pcall(history_store.add_increase, charname, rec, "")
+  if not ok then
+    mud.note(sp("skill history: couldn't record — " .. tostring(added), GP.err))
+    return
+  end
+  if not added then return end
+  hskills_new = hskills_new + 1
+  if hskills_note_pending then return end
+  hskills_note_pending = true
+  mud.delay(1000, function()
+    hskills_note_pending = false
+    local n = hskills_new
+    hskills_new = 0
+    mud.note(sp("skill history: ", GP.label), sp("recorded "),
+      sp(string.format("%d new increase%s", n, n == 1 and "" or "s"), {
+        fg = "cyan", underline = true,
+        on_click = function() show_tm(charname, nil, nil, false) end,
+      }))
+  end)
+end)
+
+-- ---------------------------------------------------------------------
 -- /skill — inspect a single skill: its current level/bonus, the stat
 -- contributions feeding its multiplicator, and (with an optional number) a
 -- dual reading of that number as a target bonus AND a target level — so the
@@ -1825,6 +2165,7 @@ local function show_skill(charname, query, target)
   end
 
   print_freshness_line(charname, "skill refresh")
+  print_skill_history(charname, path)
 end
 
 mud.command("skill", function(m)

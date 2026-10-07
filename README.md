@@ -13,6 +13,16 @@ feed it — add an optional number (e.g. /skill ma.sp.of 550) to see what
 level a target bonus needs and what bonus a target level gives, with a
 one-click "add goal" for either.
 
+It also keeps a history of your skill increases — TMs, advances, and
+teaching alike. Whenever you type `hskills` in game, every line it prints
+is recorded with its exact time. Increases `hskills` never showed (a
+session that ended before you typed it) are inferred from what changed
+between /skills-refresh runs and dated as a range ("Oct 2–4"). Browse it
+with /tm (last week, every skill), /tm all, /tm &lt;skill&gt;, or a whole
+branch like /tm fi.ra, with windows like 3d, 2w, 6m, today or all; /skill
+also lists a skill's ten most recent increases. Existing logs can be
+backfilled once with `tools/backfill_hskills.py`.
+
 ## A note on cross-plugin events
 
 This plugin has an optional dependency on
