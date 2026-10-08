@@ -140,4 +140,16 @@ test("abbreviate is collision-free across all 251 skills", function()
   end
 end)
 
+-- ---------------------------------------------------------------------
+-- is_leaf — /skill-history lists leaf skills only.
+-- ---------------------------------------------------------------------
+test("is_leaf is true only for skills with no children", function()
+  eq(skill_data.is_leaf("fighting.range.thrown"), true, "fi.ra.th leaf")
+  eq(skill_data.is_leaf("adventuring.movement.climbing.tree"), true, "deep leaf")
+  eq(skill_data.is_leaf("adventuring.health"), true, "shallow leaf")
+  eq(skill_data.is_leaf("fighting.range"), false, "branch")
+  eq(skill_data.is_leaf("fighting"), false, "root")
+  eq(skill_data.is_leaf("spoken Dwarfish"), true, "unknown (language) counts as leaf")
+end)
+
 print(string.format("\n%d skill_data tests passed.", passed))

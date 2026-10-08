@@ -370,6 +370,15 @@ function M.abbreviate(path)
   return table.concat(out, ".")
 end
 
+-- True if `path` has no children in the skill tree — e.g. fighting.range.thrown
+-- is a leaf, fighting.range and fighting are not. Paths the tree doesn't know
+-- (language skills like "spoken Dwarfish") count as leaves.
+function M.is_leaf(path)
+  if type(path) ~= "string" then return false end
+  if not _children then build_children() end
+  return _children[path] == nil
+end
+
 -- Compute the multiplicator M for a skill from a stats table, via the
 -- stat-based formula in src/bonus.lua. Returns nil if the path is unknown,
 -- stats are missing, or M is undefined. This is the "from stats" counterpart

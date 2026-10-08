@@ -1749,13 +1749,6 @@ local function load_history_rows(charname, opts, win)
   return out
 end
 
--- Skill column label: the game-style abbreviation for dotted paths; language
--- skills ("spoken Dwarfish") and top-level names as-is.
-local function history_skill_label(skill)
-  if skill:find(" ", 1, true) or not skill:find(".", 1, true) then return skill end
-  return skill_data.abbreviate(skill)
-end
-
 -- One "from→to (+d)" reading split into pieces so a column of them aligns:
 -- from, to and the signed delta are each padded to the column's widest.
 local function span_parts(from, to)
@@ -1782,8 +1775,7 @@ local function print_history_rows(rows, opts)
   local w = { when = 0, skill = 0, lf = 0, lt = 0, ld = 0, bf = 0, bt = 0, bd = 0 }
   local cells = {}
   for _, r in ipairs(rows) do
-    local c = { row = r, when = skill_history.when_label(r, now),
-                skill = history_skill_label(r.skill) }
+    local c = { row = r, when = skill_history.when_label(r, now), skill = r.skill }
     c.lf, c.lt, c.ld, c.ln = span_parts(r.from_level, r.to_level)
     if r.from_bonus ~= nil or r.to_bonus ~= nil then
       c.bf, c.bt, c.bd, c.bn = span_parts(r.from_bonus, r.to_bonus)
@@ -1871,6 +1863,13 @@ show_history = function(charname, query, spec, full)
 
   local rows = load_history_rows(charname, path and { under = path } or {}, win)
   if not rows then return end
+  -- Leaf skills only: branch levels (fighting, fighting.range) rise alongside
+  -- their leaves and would just repeat them.
+  local leaves = {}
+  for _, r in ipairs(rows) do
+    if skill_data.is_leaf(r.skill) then leaves[#leaves + 1] = r end
+  end
+  rows = leaves
 
   local skills_seen, n_skills, levels = {}, 0, 0
   for _, r in ipairs(rows) do
@@ -1946,9 +1945,8 @@ local function print_skill_history(charname, path)
   for i = 1, math.min(#rows, HISTORY_SKILL_ROWS) do shown[i] = rows[i] end
   print_history_rows(shown, { labels = true, indent = "    " })
   if #rows > HISTORY_SKILL_ROWS then
-    local abbr = history_skill_label(path)
     mud.note(sp(string.format("    … %d more — ", #rows - HISTORY_SKILL_ROWS), muted),
-      sp(pfx() .. "skill-history " .. abbr .. " all", {
+      sp(pfx() .. "skill-history " .. path .. " all", {
         fg = "light cyan", bold = true, underline = true,
         on_click = function() show_history(charname, path, "all", false) end,
       }))
