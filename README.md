@@ -20,8 +20,13 @@ session that ended before you typed it) are inferred from what changed
 between /skills-refresh runs and dated as a range ("Oct 2–4"). Browse it
 with /skill-history (or /sh; last week, every skill), /skill-history all,
 /skill-history &lt;skill&gt;, or a whole branch like /skill-history fi.ra,
-with windows like 3d, 2w, 6m, today or all; /skill also lists a skill's ten most recent increases. Existing logs can be
-backfilled once with `tools/backfill_hskills.py`.
+with windows like 3d, 2w, 6m, today or all; /skill also lists a skill's ten most recent increases. Run
+/skill-history backpopulate once to import every `hskills` you've typed
+before from this world's Mallard logs. Each increase is filed under the
+character who was logged in at the time (from the GMCP char.info Mallard
+logged with it), so one run fills in every character that has played through
+the world. It needs Mallard's plugin log search and the "Search this world's
+log history" permission; running it again only adds what's missing.
 
 ## A note on cross-plugin events
 

@@ -37,6 +37,8 @@ local M = {}
 -- Trigger patterns (PCRE-ish, for mud.trigger / fancy_regex). The log
 -- backfill (tools/backfill_hskills.py) reads these two strings straight out
 -- of this file, so the live trigger and the backfill can't drift apart.
+-- /skill-history backpopulate searches with them too (LOG_QUERY below) and
+-- re-parses each hit with parse_line — keep that in step with LINE_PATTERN.
 -- ---------------------------------------------------------------------
 
 M.HEADER_PATTERN = [[^Recent skill changes during this session:\s*$]]
@@ -169,6 +171,112 @@ function M.make_capture(opts)
     return rec
   end
   function self.is_open(now) return open_until ~= nil and now <= open_until end
+  return self
+end
+
+-- ---------------------------------------------------------------------
+-- Log backfill (/skill-history backpopulate)
+-- ---------------------------------------------------------------------
+
+-- One `logs.search` regex for both kinds of line. logs.search uses the Rust
+-- `regex` crate — no lookaround, no backreferences — which both patterns
+-- above already stay within.
+M.LOG_QUERY = "(?:" .. M.HEADER_PATTERN .. ")|(?:" .. M.LINE_PATTERN .. ")"
+
+local DOW_OK = { Mon = true, Tue = true, Wed = true, Thu = true,
+                 Fri = true, Sat = true, Sun = true }
+
+function M.is_header(text)
+  return type(text) == "string"
+    and text:match("^Recent skill changes during this session:%s*$") ~= nil
+end
+
+-- parse_line(text) -> captures table | nil
+-- LINE_PATTERN re-expressed as Lua patterns, for search hits (which arrive
+-- as plain text, not trigger matches). Returns the same named fields a
+-- trigger match carries, so increase_from_captures takes either.
+function M.parse_line(text)
+  if type(text) ~= "string" then return nil end
+  local dow, mon, day, hms, year, tz, skill, levels, tail = text:match(
+    "^(%a%a%a) (%a%a%a) +(%d%d?) (%d%d:%d%d:%d%d) (%d%d%d%d) %[([%w+-]+)%] %- "
+    .. "(.-) increased by (%d+) levels? (.*)$")
+  if not dow or not DOW_OK[dow] or not MONTHS[mon] or skill == "" then return nil end
+  local bdelta, rest = tail:match("^%(and bonus (%-?%d+)%) (.*)$")
+  rest = rest or tail
+  local to_level, after = rest:match("^to level (%d+)(.*)$")
+  if not to_level then return nil end
+  local to_bonus = after:match("^ %(and bonus (%-?%d+)%)%.%s*$")
+  if not to_bonus and not after:match("^%.%s*$") then return nil end
+  return {
+    dow = dow, mon = mon, day = tonumber(day), hms = hms, year = tonumber(year),
+    tz = tz, skill = skill, levels = tonumber(levels),
+    bdelta = tonumber(bdelta), to_level = tonumber(to_level),
+    to_bonus = tonumber(to_bonus),
+  }
+end
+
+-- make_log_gate() -> { feed(text, t_ms, who) -> records, finish() -> dropped }
+--
+-- The live capture's header gate, for search hits that arrive NEWEST FIRST.
+-- Forwards, a header opens a CAPTURE_WINDOW_SECONDS window and each
+-- accepted line extends it. Backwards, the lines of one hskills burst show
+-- up before their header, so they wait in `pending` until it arrives:
+--
+--   * a header accepts pending lines oldest-first while each is within the
+--     window of the one before it (the first, of the header itself);
+--   * a line more than the window older than the oldest pending line breaks
+--     the chain — nothing in pending can be reached from an earlier header
+--     any more, so those lines are dropped as ungated.
+--
+-- That keeps `pending` down to one burst, and needs no per-day buffering:
+-- a burst straddling midnight or a search continuation just keeps feeding.
+-- feed returns the accepted records (see increase_from_captures), each with
+-- `who` set to the `who` its own line was fed with — the character logged
+-- in when it was printed (nil if unknown).
+function M.make_log_gate(opts)
+  opts = opts or {}
+  local window_ms = (opts.window or M.CAPTURE_WINDOW_SECONDS) * 1000
+  local pending = {}   -- newest first, as they arrived
+  local self = { headers = 0, accepted = 0, ungated = 0 }
+
+  local function drop()
+    self.ungated = self.ungated + #pending
+    pending = {}
+  end
+
+  function self.feed(text, t, who)
+    if type(t) ~= "number" then return {} end
+    if M.is_header(text) then
+      self.headers = self.headers + 1
+      local out, prev = {}, t
+      for i = #pending, 1, -1 do
+        local p = pending[i]
+        if p.t - prev > window_ms then
+          self.ungated = self.ungated + i
+          break
+        end
+        p.rec.who = p.who
+        out[#out + 1] = p.rec
+        prev = p.t
+      end
+      self.accepted = self.accepted + #out
+      pending = {}
+      return out
+    end
+    local rec = M.increase_from_captures(M.parse_line(text))
+    if not rec then return {} end
+    if #pending > 0 and pending[#pending].t - t > window_ms then drop() end
+    pending[#pending + 1] = { t = t, rec = rec, who = who }
+    return {}
+  end
+
+  -- End of the search: whatever is still pending never met its header.
+  function self.finish()
+    local n = #pending
+    drop()
+    return n
+  end
+
   return self
 end
 

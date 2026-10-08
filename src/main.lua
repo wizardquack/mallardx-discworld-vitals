@@ -1835,10 +1835,12 @@ local function history_help()
   line(p .. "skill-history <skill>",        "one skill — or a whole branch, e.g. fi.ra")
   line(p .. "skill-history <skill> <window>", "windows: 1d 3d 2w 6m 1y today yesterday all")
   line(p .. "skill-history ... full",       "list every row, not just the first " .. HISTORY_LIST_LIMIT)
+  line(p .. "skill-history backpopulate",   "import past hskills output from this world's logs")
 end
 
--- Forward-declared: the "… N more" span re-enters show_history with `full`.
-local show_history
+-- Forward-declared: the "… N more" span re-enters show_history with `full`,
+-- and the empty-history hint links to the log import defined below it.
+local show_history, backfill_start
 show_history = function(charname, query, spec, full)
   if not history_ok then history_unavailable("skill-history") return end
   local muted = { fg = "light black" }
@@ -1900,7 +1902,12 @@ show_history = function(charname, query, spec, full)
         }))
     else
       mud.note(sp("  Type ", muted), sp("hskills", GP.cmd),
-        sp(" in game to record this session's increases.", muted))
+        sp(" in game to record this session's increases, or ", muted),
+        sp(pfx() .. "skill-history backpopulate", {
+          fg = "light cyan", bold = true, underline = true,
+          on_click = function() backfill_start() end,
+        }),
+        sp(" to import earlier ones from your logs.", muted))
     end
     return
   end
@@ -1948,10 +1955,263 @@ local function print_skill_history(charname, path)
   end
 end
 
+-- ---------------------------------------------------------------------
+-- /skill-history backpopulate — import every `hskills` run already in this
+-- world's logs, via the host's `logs.search` (Mallard log search API; needs
+-- `log_access`). One regex search for header + skill lines, newest first;
+-- skill_history.make_log_gate applies the live capture's header gate in
+-- reverse, and rows go in as source 'log' with the same INSERT OR IGNORE as
+-- the live trigger, so re-running — or resuming after a cancel — only adds
+-- what's missing. Rows are written batch by batch, so a cancelled or
+-- interrupted run keeps what it found.
+--
+-- A world's logs can hold several characters, so the search asks for each
+-- hit's GMCP `char.info` (opts.gmcp) and every increase is filed under the
+-- character that was logged in when it was printed — whoever runs the
+-- import, it fills in every character's history at once. Lines with no
+-- char.info in their session (GMCP off) can't be attributed and are skipped.
+-- ---------------------------------------------------------------------
+
+local BACKFILL_LIMIT = 100000       -- logs.search's max hits per search
+local BACKFILL_NOTE_EVERY = 10      -- seconds between progress notes
+
+local backfill = nil   -- the running import, if any
+
+local function backfill_note(...)
+  mud.note(sp("skill history: ", GP.label), ...)
+end
+
+local function plural(n, word)
+  return string.format("%d %s%s", n, word, n == 1 and "" or "s")
+end
+
+local function backfill_write(st, recs)
+  local fresh = {}
+  for _, r in ipairs(recs) do
+    -- Every hskills run repeats the session so far; skip lines this import
+    -- already wrote before they reach the database.
+    local key = (r.who or "") .. "\0" .. r.skill .. "\0" .. r.to_level
+      .. "\0" .. r.server_time
+    if not st.seen[key] then
+      st.seen[key] = true
+      if r.who then
+        fresh[#fresh + 1] = r
+      else
+        st.unattributed = st.unattributed + 1
+      end
+    end
+  end
+  if #fresh == 0 then return end
+  db.transaction(function()
+    for _, r in ipairs(fresh) do
+      st.found = st.found + 1
+      if history_store.add_increase(r.who, r, "log") then
+        st.added = st.added + 1
+        local c = st.chars[r.who]
+        if not c then
+          c = { name = r.who, added = 0, skills = {}, n_skills = 0 }
+          st.chars[r.who] = c
+          st.char_order[#st.char_order + 1] = r.who
+        end
+        c.added = c.added + 1
+        if not c.skills[r.skill] then
+          c.skills[r.skill] = true
+          c.n_skills = c.n_skills + 1
+        end
+        if not c.first_ts or r.ts < c.first_ts then c.first_ts = r.ts end
+        if not c.last_ts or r.ts > c.last_ts then c.last_ts = r.ts end
+      end
+    end
+  end)
+end
+
+-- One character's share of the import, with a link to their history. The
+-- typed command only ever shows the logged-in character, so other
+-- characters get a plain "view" link instead.
+local function backfill_char_parts(c, current, lead)
+  local span = os.date("%Y-%m-%d", c.first_ts)
+  if os.date("%Y-%m-%d", c.last_ts) ~= span then
+    span = span .. " → " .. os.date("%Y-%m-%d", c.last_ts)
+  end
+  local link = c.name == current and (pfx() .. "skill-history all") or "view"
+  return sp(string.format("%s%s for %s across %s (%s) — ", lead,
+      plural(c.added, "increase"), title_case(c.name), plural(c.n_skills, "skill"), span)),
+    sp(link, {
+      fg = "light cyan", bold = true, underline = true,
+      on_click = function() show_history(c.name, nil, "all", false) end,
+    })
+end
+
+local function backfill_finish(st, summary)
+  backfill = nil
+  st.gate.finish()
+  local muted = { fg = "light black" }
+  local reason = summary.reason
+  if reason == "error" then
+    backfill_note(sp("log import failed — " .. tostring(summary.error), GP.err))
+  elseif reason == "cancelled" then
+    backfill_note(sp("log import stopped. "),
+      sp("Run it again to pick up where it left off.", muted))
+  end
+  local current = gmcp.get("char.info.name")
+  local known = st.found - st.added
+  if #st.char_order == 1 then
+    local parts = { backfill_char_parts(st.chars[st.char_order[1]], current, "imported ") }
+    if known > 0 then
+      parts[#parts + 1] = sp(string.format(" (%d already recorded)", known), muted)
+    end
+    backfill_note(table.unpack(parts))
+  elseif #st.char_order > 1 then
+    table.sort(st.char_order, function(x, y)
+      return st.chars[x].added > st.chars[y].added
+    end)
+    local parts = { sp(string.format("imported %s for %d characters",
+      plural(st.added, "increase"), #st.char_order)) }
+    if known > 0 then
+      parts[#parts + 1] = sp(string.format(" (%d already recorded)", known), muted)
+    end
+    backfill_note(table.unpack(parts))
+    for _, name in ipairs(st.char_order) do
+      mud.note(backfill_char_parts(st.chars[name], current, "  "))
+    end
+  elseif reason == "complete" then
+    if st.found > 0 then
+      backfill_note(sp(string.format("log import done — all %s in the logs "
+        .. "were already recorded.", plural(st.found, "increase"))))
+    else
+      backfill_note(sp("log import done — no "), sp("hskills", GP.cmd),
+        sp(" output found in this world's logs.", muted))
+    end
+  end
+  if st.unattributed > 0 then
+    backfill_note(sp(string.format("skipped %s from sessions with no GMCP char.info "
+      .. "in the logs — no way to tell which character they belong to.",
+      plural(st.unattributed, "increase")), muted))
+  end
+  if summary.structured_logging == false then
+    backfill_note(sp("structured logging is off for this world, so anything since "
+      .. "it was turned off couldn't be searched.", muted))
+  end
+end
+
+local function backfill_too_old()
+  backfill_note(sp("log import needs a newer Mallard (one whose plugin log search "
+    .. "can tell characters apart).", GP.err))
+end
+
+-- Start (or, after a "limit" stop, continue) the search. `before` is epoch
+-- ms; nil searches everything up to now.
+local function backfill_search(st, before)
+  local ok, handle = pcall(logs.search, skill_history.LOG_QUERY, {
+    regex = true, case_sensitive = true, limit = BACKFILL_LIMIT, before = before,
+    gmcp = { "char.info" },
+  }, {
+    on_hits = function(batch)
+      local recs = {}
+      for _, hit in ipairs(batch) do
+        local info = hit.gmcp and hit.gmcp["char.info"]
+        local who = type(info) == "table" and info.name or nil
+        if type(who) ~= "string" or who == "" then who = nil end
+        for _, r in ipairs(st.gate.feed(hit.text, hit.t, who)) do recs[#recs + 1] = r end
+        st.oldest_t = hit.t
+      end
+      backfill_write(st, recs)
+    end,
+    on_progress = function(p)
+      -- A continuation search counts only the days it has left, so measure
+      -- progress as days remaining against the first search's total.
+      st.days_total = st.days_total or p.dates_total
+      local done = st.days_total - (p.dates_total - p.dates_done)
+      if os.time() - st.last_note < BACKFILL_NOTE_EVERY then return end
+      st.last_note = os.time()
+      backfill_note(sp(string.format("searched %d of %d days of logs, %s found…",
+        done, st.days_total, plural(st.found, "increase")), { fg = "light black" }))
+    end,
+    on_done = function(summary)
+      if backfill ~= st then return end
+      -- More than one search's worth of hits: carry on below the oldest hit
+      -- seen. `+ 1` re-reads that millisecond rather than risk skipping a
+      -- line sharing it; the gate and the store absorb the repeat.
+      if summary.reason == "limit" and st.oldest_t
+          and (not before or st.oldest_t + 1 < before) then
+        backfill_search(st, st.oldest_t + 1)
+        return
+      end
+      backfill_finish(st, summary)
+    end,
+  })
+  if not ok then
+    backfill = nil
+    local msg = tostring(handle)
+    if msg:find('unknown option key: "gmcp"', 1, true) then
+      backfill_too_old()
+    elseif msg:find("permission denied", 1, true) then
+      backfill_note(sp("log import needs permission to search this world's logs and "
+        .. "read char.info — allow them for Discworld Vitals in the Plugins window.",
+        GP.err))
+    elseif msg:find("not connected", 1, true) then
+      backfill_note(sp("log import only runs while connected.", GP.err))
+    else
+      backfill_note(sp("log import failed — " .. msg, GP.err))
+    end
+    return
+  end
+  st.handle = handle
+end
+
+backfill_start = function()
+  if not history_ok then history_unavailable("skill-history") return end
+  if type(logs) ~= "table" or type(logs.search) ~= "function" then
+    backfill_too_old()
+    return
+  end
+  if backfill then
+    backfill_note(sp("a log import is already running — "),
+      sp(pfx() .. "skill-history backpopulate cancel", {
+        fg = "light cyan", bold = true, underline = true,
+        on_click = function() if backfill then backfill.handle:cancel() end end,
+      }), sp(" to stop it."))
+    return
+  end
+  local st = {
+    gate = skill_history.make_log_gate(), seen = {}, chars = {}, char_order = {},
+    found = 0, added = 0, unattributed = 0, last_note = os.time(),
+  }
+  backfill = st
+  backfill_note(sp("searching this world's logs for "), sp("hskills", GP.cmd),
+    sp(" output, for every character that's played here… "),
+    sp(pfx() .. "skill-history backpopulate cancel", {
+      fg = "light black", underline = true,
+      on_click = function() if backfill == st then st.handle:cancel() end end,
+    }))
+  backfill_search(st, nil)
+end
+
+local function backfill_cancel()
+  if not backfill then
+    backfill_note(sp("no log import is running."))
+    return
+  end
+  backfill.handle:cancel()   -- on_done reports what was kept
+end
+
+-- A disconnect cancels in-flight searches without calling on_done.
+world.on("disconnect", function()
+  local st = backfill
+  if not st then return end
+  backfill = nil
+  backfill_note(sp(string.format("log import interrupted by the disconnect "
+    .. "(%s imported so far) — run ", plural(st.added, "increase"))),
+    sp(pfx() .. "skill-history backpopulate", GP.cmd),
+    sp(" again after reconnecting to finish."))
+end)
+
 mud.command("skill-history", function(m)
   local args = ((m and m.args) or ""):gsub("^%s+", ""):gsub("%s+$", "")
   local low = args:lower()
   if low == "help" or low == "?" then history_help() return end
+  if low == "backpopulate cancel" then backfill_cancel() return end
+  if low == "backpopulate" then backfill_start() return end
   local charname = goal_charname()
   if not charname or charname == "" then
     mud.note(sp("skill-history: no character yet — log in first.", GP.err))

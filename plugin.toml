@@ -24,6 +24,11 @@ sends = true
 # arbitrary time windows — indexed SQL rather than an ever-growing storage
 # blob.
 database = true
+# /skill-history backpopulate: searches this world's logs (`logs.search`) for
+# past `hskills` output, asking for each hit's char.info (covered by
+# gmcp_access above) to file it under the right character. Feature-detected — on an older Mallard the command
+# just says it needs a newer one, so minimum_app_version stays put.
+log_access = true
 
 [worlds]
 match = ["discworld.starturtle.net:*"]

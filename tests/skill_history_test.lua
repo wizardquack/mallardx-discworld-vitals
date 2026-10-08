@@ -206,4 +206,116 @@ test("span_label formats deltas and missing ends", function()
   eq(sh.span_label(nil, 19), "?→19")
 end)
 
+-- ---------------------------------------------------------------------
+-- Log backfill
+-- ---------------------------------------------------------------------
+local HDR = "Recent skill changes during this session:"
+local L_CURSING = "Wed Oct  7 06:49:46 2026 [PDT] - magic.methods.mental.cursing "
+  .. "increased by 1 level (and bonus 1) to level 168 (and bonus 286)."
+local L_DWARFISH = "Sat Oct  3 16:28:50 2026 [PDT] - spoken Dwarfish "
+  .. "increased by 1 level to level 19."
+local L_SAILING = "Mon Sep 28 21:02:11 2026 [PDT] - adventuring.movement.sailing "
+  .. "increased by 46 levels (and bonus 52) to level 120 (and bonus 160)."
+
+test("parse_line yields the trigger's captures", function()
+  local c = sh.parse_line(L_CURSING)
+  eq(c.dow, "Wed"); eq(c.mon, "Oct"); eq(c.day, 7); eq(c.hms, "06:49:46")
+  eq(c.year, 2026); eq(c.tz, "PDT"); eq(c.skill, "magic.methods.mental.cursing")
+  eq(c.levels, 1); eq(c.bdelta, 1); eq(c.to_level, 168); eq(c.to_bonus, 286)
+  local r = sh.increase_from_captures(c)
+  eq(r.ts, T_CURSING, "ts"); eq(r.server_time, "Wed Oct  7 06:49:46 2026 [PDT]")
+end)
+
+test("parse_line handles language skills and plural levels", function()
+  local d = sh.parse_line(L_DWARFISH)
+  eq(d.skill, "spoken Dwarfish"); eq(d.to_level, 19)
+  eq(d.bdelta, nil, "bdelta"); eq(d.to_bonus, nil, "to_bonus")
+  local s = sh.parse_line(L_SAILING)
+  eq(s.levels, 46); eq(s.bdelta, 52); eq(s.to_bonus, 160)
+end)
+
+test("parse_line rejects what LINE_PATTERN rejects", function()
+  eq(sh.parse_line("Bosse: " .. L_SAILING), nil, "quoted in chat")
+  eq(sh.parse_line(L_CURSING:gsub("^Wed", "Wen")), nil, "bad weekday")
+  eq(sh.parse_line(L_CURSING:gsub("%.$", "")), nil, "no full stop")
+  eq(sh.parse_line(L_CURSING .. " extra"), nil, "trailing text")
+  eq(sh.parse_line(HDR), nil, "header")
+end)
+
+test("is_header", function()
+  assert(sh.is_header(HDR))
+  assert(sh.is_header(HDR .. "  "))
+  assert(not sh.is_header("> " .. HDR))
+end)
+
+-- Feed (text, seconds) pairs newest first, as logs.search delivers them.
+local function feed_all(gate, hits)
+  local got = {}
+  for _, h in ipairs(hits) do
+    for _, r in ipairs(gate.feed(h[1], h[2] * 1000)) do got[#got + 1] = r end
+  end
+  return got
+end
+
+test("log gate accepts a burst once its header arrives", function()
+  local g = sh.make_log_gate()
+  local got = feed_all(g, {
+    { L_DWARFISH, 102 }, { L_CURSING, 101 }, { HDR, 100 },
+  })
+  eq(#got, 2, "accepted")
+  eq(got[1].skill, "magic.methods.mental.cursing", "oldest first")
+  eq(g.headers, 1); eq(g.accepted, 2); eq(g.ungated, 0)
+end)
+
+test("log gate chains each line off the one before it", function()
+  local g = sh.make_log_gate()
+  -- 100 → 104 → 108 → 112: every step inside 5s, though 112 is 12s past
+  -- the header.
+  local got = feed_all(g, {
+    { L_SAILING, 112 }, { L_DWARFISH, 108 }, { L_CURSING, 104 }, { HDR, 100 },
+  })
+  eq(#got, 3)
+end)
+
+test("log gate drops lines with no header in reach", function()
+  local g = sh.make_log_gate()
+  local got = feed_all(g, {
+    { L_SAILING, 500 },               -- quoted in a room, long after
+    { L_DWARFISH, 102 }, { HDR, 100 },
+    { L_CURSING, 50 },                -- before any header
+  })
+  eq(#got, 1, "accepted"); eq(got[1].skill, "spoken Dwarfish")
+  eq(g.finish(), 1, "left pending")
+  eq(g.ungated, 2, "ungated")
+end)
+
+test("log gate: header too far before the burst accepts nothing", function()
+  local g = sh.make_log_gate()
+  local got = feed_all(g, { { L_DWARFISH, 108 }, { L_CURSING, 107 }, { HDR, 100 } })
+  eq(#got, 0); eq(g.ungated, 2)
+end)
+
+test("log gate: each header claims only the lines after it", function()
+  local g = sh.make_log_gate()
+  local got = feed_all(g, {
+    { L_CURSING, 3601 }, { HDR, 3600 },   -- a later hskills run
+    { L_CURSING, 1 }, { HDR, 0 },         -- the same line, an hour earlier
+  })
+  eq(#got, 2, "both sightings accepted (the store dedupes)")
+end)
+
+test("log gate tags each record with its own line's character", function()
+  local g = sh.make_log_gate()
+  local got = {}
+  for _, h in ipairs({
+    { L_CURSING, 3601, "quack" }, { HDR, 3600, "quack" },
+    { L_DWARFISH, 1, "flibber" }, { HDR, 0, "flibber" },
+    { L_SAILING, -99, nil }, { HDR, -100, nil },
+  }) do
+    for _, r in ipairs(g.feed(h[1], h[2] * 1000, h[3])) do got[#got + 1] = r end
+  end
+  eq(#got, 3)
+  eq(got[1].who, "quack"); eq(got[2].who, "flibber"); eq(got[3].who, nil, "unknown")
+end)
+
 print(string.format("\n%d tests passed", passed))
