@@ -234,6 +234,39 @@ test("parse_line handles language skills and plural levels", function()
   eq(s.levels, 46); eq(s.bdelta, 52); eq(s.to_bonus, 160)
 end)
 
+-- The zone label is whatever the player named it in the game's options.
+local L_SWEDEN = "Fri Oct  9 18:25:06 2026 [Sweden DST] - magic.spells.defensive "
+  .. "increased by 11 levels (and bonus 5) to level 387 (and bonus 352)."
+
+test("parse_line takes any zone label", function()
+  local c = sh.parse_line(L_SWEDEN)
+  eq(c.tz, "Sweden DST"); eq(c.skill, "magic.spells.defensive")
+  eq(c.levels, 11); eq(c.to_level, 387); eq(c.to_bonus, 352)
+  local r = sh.increase_from_captures(c)
+  eq(r.server_time, "Fri Oct  9 18:25:06 2026 [Sweden DST]")
+  local _, exact = sh.parse_server_time(c.mon, c.day, c.hms, c.year, c.tz)
+  eq(exact, false, "unknown label reads as local time")
+  local odd = sh.parse_line(L_CURSING:gsub("%[PDT%]", "[home (UTC+1) [x]: ok]"))
+  eq(odd.tz, "home (UTC+1) [x]: ok"); eq(odd.skill, "magic.methods.mental.cursing")
+  local empty = sh.parse_line(L_CURSING:gsub("%[PDT%]", "[]"))
+  eq(empty.tz, ""); eq(empty.to_level, 168)
+end)
+
+-- A character that never set a zone gets no label at all.
+local L_NOZONE = "Fri Oct  9 18:13:04 2026 - fighting.defence.dodging "
+  .. "increased by 1 level (and bonus 5) to level 1 (and bonus 5)."
+
+test("parse_line takes a line with no zone label", function()
+  local c = sh.parse_line(L_NOZONE)
+  eq(c.tz, nil); eq(c.hms, "18:13:04"); eq(c.skill, "fighting.defence.dodging")
+  eq(c.levels, 1); eq(c.bdelta, 5); eq(c.to_level, 1); eq(c.to_bonus, 5)
+  local r = sh.increase_from_captures(c)
+  eq(r.server_time, "Fri Oct  9 18:13:04 2026", "no [nil]")
+  eq(r.from_level, 0); eq(r.from_bonus, 0)
+  local _, exact = sh.parse_server_time(c.mon, c.day, c.hms, c.year, c.tz)
+  eq(exact, false, "no label reads as local time")
+end)
+
 test("parse_line rejects what LINE_PATTERN rejects", function()
   eq(sh.parse_line("Bosse: " .. L_SAILING), nil, "quoted in chat")
   eq(sh.parse_line(L_CURSING:gsub("^Wed", "Wen")), nil, "bad weekday")
@@ -265,6 +298,13 @@ test("log gate accepts a burst once its header arrives", function()
   eq(#got, 2, "accepted")
   eq(got[1].skill, "magic.methods.mental.cursing", "oldest first")
   eq(g.headers, 1); eq(g.accepted, 2); eq(g.ungated, 0)
+end)
+
+test("log gate accepts lines with any zone label, or none", function()
+  local g = sh.make_log_gate()
+  local got = feed_all(g, { { L_NOZONE, 102 }, { L_SWEDEN, 101 }, { HDR, 100 } })
+  eq(#got, 2); eq(got[1].skill, "magic.spells.defensive")
+  eq(got[2].skill, "fighting.defence.dodging")
 end)
 
 test("log gate chains each line off the one before it", function()

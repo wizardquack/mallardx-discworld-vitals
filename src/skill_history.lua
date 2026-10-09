@@ -46,8 +46,10 @@ M.HEADER_PATTERN = [[^Recent skill changes during this session:\s*$]]
 -- Anchored on the full `<Day> <Mon> <dd> HH:MM:SS YYYY [TZ] - ` prefix:
 -- guild chat and tells that quote a skill line ("Bosse: adventuring.movement
 -- .sailing increased by 46 levels…") never start with a date, so they can't
--- match.
-M.LINE_PATTERN = [[^(?P<dow>Mon|Tue|Wed|Thu|Fri|Sat|Sun) (?P<mon>Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) +(?P<day>\d{1,2}) (?P<hms>\d\d:\d\d:\d\d) (?P<year>\d{4}) \[(?P<tz>[A-Za-z0-9+-]+)\] - (?P<skill>.+?) increased by (?P<levels>\d+) levels? (?:\(and bonus (?P<bdelta>-?\d+)\) )?to level (?P<to_level>\d+)(?: \(and bonus (?P<to_bonus>-?\d+)\))?\.\s*$]]
+-- match. The [TZ] label is whatever the player named their zone in the
+-- game's options ("PDT", "Sweden DST", …) — free text, so it runs lazily up
+-- to the first "] - " — and is missing entirely when they never set one.
+M.LINE_PATTERN = [[^(?P<dow>Mon|Tue|Wed|Thu|Fri|Sat|Sun) (?P<mon>Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) +(?P<day>\d{1,2}) (?P<hms>\d\d:\d\d:\d\d) (?P<year>\d{4})(?: \[(?P<tz>.*?)\])? - (?P<skill>.+?) increased by (?P<levels>\d+) levels? (?:\(and bonus (?P<bdelta>-?\d+)\) )?to level (?P<to_level>\d+)(?: \(and bonus (?P<to_bonus>-?\d+)\))?\.\s*$]]
 
 -- A date-shaped skill line only counts if it arrives within this many
 -- seconds of the "Recent skill changes" header (each accepted line extends
@@ -66,9 +68,10 @@ local MONTHS = {
   Jul = 7, Aug = 8, Sep = 9, Oct = 10, Nov = 11, Dec = 12,
 }
 
--- UTC offsets (hours) for the zone abbreviations Discworld prints. The
--- game renders times in the player's chosen zone; anything not listed here
--- falls back to "assume it's the local zone" (see parse_server_time).
+-- UTC offsets (hours) for common zone abbreviations. The game renders
+-- times in the player's chosen zone under a label the player picks, so
+-- anything not listed here ("Sweden DST") falls back to "assume it's the
+-- local zone" (see parse_server_time).
 M.TZ_OFFSETS = {
   UTC = 0, GMT = 0, BST = 1, IST = 1, WET = 0, WEST = 1,
   CET = 1, CEST = 2, EET = 2, EEST = 3,
@@ -94,15 +97,15 @@ end
 M._days_from_civil = days_from_civil
 
 -- parse_server_time(mon, day, hms, year, tz) -> unix_ts, exact_zone
--- `exact_zone` is false when the zone abbreviation was unknown and the
--- wall-clock time was read as local time instead.
+-- `exact_zone` is false when the zone abbreviation was unknown (or absent)
+-- and the wall-clock time was read as local time instead.
 function M.parse_server_time(mon, day, hms, year, tz)
   local mo = MONTHS[mon]
   local h, mi, s = tostring(hms):match("^(%d+):(%d+):(%d+)$")
   day, year = tonumber(day), tonumber(year)
   if not (mo and h and day and year) then return nil end
   h, mi, s = tonumber(h), tonumber(mi), tonumber(s)
-  local off = M.TZ_OFFSETS[tostring(tz):upper()]
+  local off = tz and M.TZ_OFFSETS[tostring(tz):upper()]
   if off then
     local secs = days_from_civil(year, mo, day) * 86400 + h * 3600 + mi * 60 + s
     return math.floor(secs - off * 3600), true
@@ -136,9 +139,10 @@ function M.increase_from_captures(c)
   local to_bonus = tonumber(c.to_bonus)
   -- The game pads single-digit days with a space ("Oct  7"); rebuild that
   -- exact shape so the dedupe key matches whichever path saw the line.
-  local server_time = string.format("%s %s %2d %s %d [%s]",
+  local server_time = string.format("%s %s %2d %s %d",
     tostring(c.dow), tostring(c.mon), tonumber(c.day), tostring(c.hms),
-    tonumber(c.year), tostring(c.tz))
+    tonumber(c.year))
+  if c.tz ~= nil then server_time = server_time .. " [" .. tostring(c.tz) .. "]" end
   return {
     ts          = ts,
     server_time = server_time,
@@ -200,8 +204,15 @@ end
 function M.parse_line(text)
   if type(text) ~= "string" then return nil end
   local dow, mon, day, hms, year, tz, skill, levels, tail = text:match(
-    "^(%a%a%a) (%a%a%a) +(%d%d?) (%d%d:%d%d:%d%d) (%d%d%d%d) %[([%w+-]+)%] %- "
+    "^(%a%a%a) (%a%a%a) +(%d%d?) (%d%d:%d%d:%d%d) (%d%d%d%d) %[(.-)%] %- "
     .. "(.-) increased by (%d+) levels? (.*)$")
+  if not dow then
+    -- No zone label: Lua patterns have no optional groups, so try again
+    -- without one. tz stays nil, as it does in a trigger match.
+    dow, mon, day, hms, year, skill, levels, tail = text:match(
+      "^(%a%a%a) (%a%a%a) +(%d%d?) (%d%d:%d%d:%d%d) (%d%d%d%d) %- "
+      .. "(.-) increased by (%d+) levels? (.*)$")
+  end
   if not dow or not DOW_OK[dow] or not MONTHS[mon] or skill == "" then return nil end
   local bdelta, rest = tail:match("^%(and bonus (%-?%d+)%) (.*)$")
   rest = rest or tail

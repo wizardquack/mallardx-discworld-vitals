@@ -115,7 +115,7 @@ def server_ts(g, tz_offsets):
     """Mirror of skill_history.parse_server_time."""
     h, mi, s = (int(x) for x in g["hms"].split(":"))
     naive = datetime(int(g["year"]), MONTHS[g["mon"]], int(g["day"]), h, mi, s)
-    off = tz_offsets.get(g["tz"].upper())
+    off = tz_offsets.get(g["tz"].upper()) if g["tz"] is not None else None
     if off is None:
         return int(naive.timestamp()), False   # local-time fallback
     aware = naive.replace(tzinfo=timezone(timedelta(hours=off)))
@@ -144,8 +144,10 @@ def extract(files, header_re, line_re, window, tz_offsets):
             if not exact_zone:
                 stats["unknown_tz"] += 1
             # Same shape increase_from_captures builds: day space-padded.
-            server_time = "%s %s %2d %s %d [%s]" % (
-                g["dow"], g["mon"], int(g["day"]), g["hms"], int(g["year"]), g["tz"])
+            server_time = "%s %s %2d %s %d" % (
+                g["dow"], g["mon"], int(g["day"]), g["hms"], int(g["year"]))
+            if g["tz"] is not None:
+                server_time += " [%s]" % g["tz"]
             key = (g["skill"], int(g["to_level"]), server_time)
             stats["sightings"] += 1
             if key in found:
