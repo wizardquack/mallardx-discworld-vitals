@@ -116,14 +116,16 @@ end
 -- ---------------------------------------------------------------------
 
 -- Build an increase record from a trigger match (or any table carrying the
--- LINE_PATTERN's named groups). Returns nil for a malformed match.
+-- LINE_PATTERN's named groups). Returns nil for a malformed match. A live
+-- trigger's match is host userdata, not a table, so don't type-check it —
+-- only index it.
 --
 --   { ts, server_time, skill, levels, bonus_delta, to_level, to_bonus,
 --     from_level, from_bonus }
 --
 -- bonus_delta / to_bonus / from_bonus are nil for language skills.
 function M.increase_from_captures(c)
-  if type(c) ~= "table" then return nil end
+  if c == nil then return nil end
   local skill    = c.skill and tostring(c.skill)
   local levels   = tonumber(c.levels)
   local to_level = tonumber(c.to_level)
